@@ -1,0 +1,363 @@
+syntax = "proto3";
+
+// Package fleet.v1 is the gRPC contract between the fleet daemon and its
+// clients (Mac app, TUI, CLI). All clients connect over a Unix domain socket
+// at ~/.config/fleet/daemon.sock.
+//
+// Versioning: this is v1. Breaking changes go to v2 in a sibling package;
+// the daemon supports both for one minor release before dropping v1.
+//
+// Note: PTY data does NOT travel over this socket. Clients spawn local
+// `tmux attach` against the shared tmux socket at ~/.config/fleet/tmux.sock
+// and render the resulting PTY locally. This service is the control plane.
+package fleet.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/brizzai/fleet/gen/proto/fleet/v1;fleetv1";
+option swift_prefix = "Fleet";
+
+// ─── Service ───────────────────────────────────────────────────────────────
+
+service Fleet {
+  // ── Sessions ───────────────────────────────────────────────────────────
+  // ListSessions streams the current session list, then continues to push
+  // updates as sessions are created, deleted, or change status. The first
+  // message after the call always contains the full snapshot.
+  rpc ListSessions(ListSessionsRequest) returns (stream SessionUpdate);
+
+  rpc GetSession(GetSessionRequest) returns (Session);
+  rpc CreateSession(CreateSessionRequest) returns (Session);
+  rpc DeleteSession(DeleteSessionRequest) returns (google.protobuf.Empty);
+  rpc RestartSession(RestartSessionRequest) returns (Session);
+  rpc RenameSession(RenameSessionRequest) returns (Session);
+
+  // AcknowledgeSession clears the "needs attention" flag — the session stays
+  // in its current state but no longer surfaces in jump-to-attention or
+  // notifications.
+  rpc AcknowledgeSession(AcknowledgeSessionRequest) returns (google.protobuf.Empty);
+
+  // SendKeys sends raw keystrokes to a session's tmux pane. Used for quick
+  // approve (Y), mid-flight steering, and any chrome-level action that
+  // needs to interact with the running Claude TUI.
+  rpc SendKeys(SendKeysRequest) returns (google.protobuf.Empty);
+
+  // CapturePane returns the most recent N lines of pane output (post-ANSI-strip).
+  // Used for @terminal mention to attach pane state to the next prompt.
+  rpc CapturePane(CapturePaneRequest) returns (CapturePaneResponse);
+
+  // ── Repos ──────────────────────────────────────────────────────────────
+  // ListRepos streams the current repo list (with branch / dirty / PR state)
+  // and pushes updates as git/gh refresh cycles run.
+  rpc ListRepos(ListReposRequest) returns (stream RepoUpdate);
+
+  rpc PinRepo(PinRepoRequest) returns (google.protobuf.Empty);
+  rpc UnpinRepo(UnpinRepoRequest) returns (google.protobuf.Empty);
+
+  // ── Workspaces ─────────────────────────────────────────────────────────
+  rpc ListWorkspaces(ListWorkspacesRequest) returns (ListWorkspacesResponse);
+  rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
+  rpc DestroyWorkspace(DestroyWorkspaceRequest) returns (google.protobuf.Empty);
+
+  // ── Slot bindings (RTS-style hotkey bindings, Alt+0-9) ─────────────────
+  rpc ListSlotBindings(google.protobuf.Empty) returns (ListSlotBindingsResponse);
+  rpc BindSlot(BindSlotRequest) returns (google.protobuf.Empty);
+  rpc UnbindSlot(UnbindSlotRequest) returns (google.protobuf.Empty);
+
+  // ── Hook event stream (drives notifications) ───────────────────────────
+  // StreamHookEvents emits one event per hook fire (UserPromptSubmit, Stop,
+  // Notification, PostToolUse, etc.). Mac app subscribes to drive macOS
+  // notifications; TUI subscribes for the action log.
+  rpc StreamHookEvents(StreamHookEventsRequest) returns (stream HookEvent);
+
+  // ── Config ─────────────────────────────────────────────────────────────
+  rpc GetConfig(google.protobuf.Empty) returns (Config);
+  rpc UpdateConfig(UpdateConfigRequest) returns (Config);
+
+  // ── V2 RPCs (placeholders, not implemented in V1) ──────────────────────
+  // rpc GetWorkspaceDiff(GetWorkspaceDiffRequest) returns (stream DiffChunk);
+  // rpc GetSessionStats(GetSessionStatsRequest) returns (SessionStats);
+  // rpc RunSuggestedAction(RunSuggestedActionRequest) returns (google.protobuf.Empty);
+}
+
+// ─── Enums ─────────────────────────────────────────────────────────────────
+
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_IDLE        = 1;
+  STATUS_STARTING    = 2;
+  STATUS_RUNNING     = 3;
+  STATUS_WAITING     = 4;
+  STATUS_FINISHED    = 5;
+  STATUS_ERROR       = 6;
+}
+
+enum HookKind {
+  HOOK_KIND_UNSPECIFIED       = 0;
+  HOOK_KIND_USER_PROMPT_SUBMIT = 1;
+  HOOK_KIND_STOP              = 2;
+  HOOK_KIND_NOTIFICATION      = 3;
+  HOOK_KIND_PRE_TOOL_USE      = 4;
+  HOOK_KIND_POST_TOOL_USE     = 5;
+  HOOK_KIND_SESSION_START     = 6;
+}
+
+enum DeleteOption {
+  DELETE_OPTION_UNSPECIFIED = 0;
+  // Delete the session record only. Tmux session is killed; workspace and
+  // repo (if pinned) remain.
+  DELETE_OPTION_SESSION_ONLY = 1;
+  // Delete the session and destroy its workspace (e.g. remove the worktree).
+  DELETE_OPTION_WITH_WORKSPACE = 2;
+  // Delete the session, destroy its workspace, and unpin the repo.
+  DELETE_OPTION_WITH_REPO = 3;
+}
+
+enum SessionUpdateKind {
+  SESSION_UPDATE_KIND_UNSPECIFIED = 0;
+  SESSION_UPDATE_KIND_SNAPSHOT    = 1;  // initial full list (one or more messages)
+  SESSION_UPDATE_KIND_ADDED       = 2;
+  SESSION_UPDATE_KIND_CHANGED     = 3;
+  SESSION_UPDATE_KIND_REMOVED     = 4;
+}
+
+enum RepoUpdateKind {
+  REPO_UPDATE_KIND_UNSPECIFIED = 0;
+  REPO_UPDATE_KIND_SNAPSHOT    = 1;
+  REPO_UPDATE_KIND_ADDED       = 2;
+  REPO_UPDATE_KIND_CHANGED     = 3;
+  REPO_UPDATE_KIND_REMOVED     = 4;
+}
+
+// ─── Core models ───────────────────────────────────────────────────────────
+
+message Session {
+  string id = 1;                                    // <8hex>-<unix_ts>
+  string title = 2;                                 // human-readable, auto-named or manually renamed
+  string project_path = 3;                          // working directory
+  Status status = 4;
+  string tmux_session_name = 5;                     // fleet_<id>
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp last_accessed_at = 7;
+  bool acknowledged = 8;                            // user has dismissed the "needs attention" state
+
+  // Claude session tracking — fleet captures the Claude session ID from
+  // hooks and uses it on restart with --resume.
+  string claude_session_id = 9;
+  string claude_session_name = 10;                  // transient; from JSONL
+
+  // Workspace this session belongs to (worktree name, or empty for plain repo).
+  string workspace_name = 11;
+
+  // Auto-naming bookkeeping.
+  bool manually_renamed = 12;
+  string first_prompt = 13;
+  bool title_generated = 14;
+  int32 prompt_count = 15;
+
+  // Fork-from: when set on creation, `claude --resume <id> --fork-session`.
+  string fork_from_id = 16;
+
+  // Liveness — true if the tmux session still exists.
+  bool is_alive = 17;
+
+  // Repo membership (derived from project_path).
+  string repo_root = 18;
+
+  // Hook-derived raw status string ("running"/"waiting"/etc). Useful for
+  // debug surfaces; clients should rely on `status` for display.
+  string hook_status = 19;
+}
+
+message Repo {
+  string root = 1;                                  // absolute path
+  string display_name = 2;                          // e.g. "brizzai/brizzai" if remote known, else basename
+  string branch = 3;                                // current branch on disk
+  bool is_dirty = 4;                                // uncommitted changes
+  bool is_worktree_repo = 5;                        // detached worktree vs main checkout
+  PR pr = 6;                                        // optional, present if gh found one
+  google.protobuf.Timestamp last_git_refresh = 7;
+  google.protobuf.Timestamp last_pr_refresh = 8;
+  bool pinned = 9;                                  // shown in sidebar even with zero sessions
+}
+
+message PR {
+  int32 number = 1;
+  string title = 2;
+  string url = 3;
+  string state = 4;                                 // OPEN, CLOSED, MERGED
+  string review_decision = 5;                       // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, ""
+  string ci_status = 6;                             // SUCCESS, FAILURE, PENDING, ""
+  int32 unresolved_threads = 7;
+  bool has_conflicts = 8;
+}
+
+message Workspace {
+  string name = 1;
+  string path = 2;
+  string branch = 3;                                // empty for non-git providers
+  string status = 4;                                // free-form provider-specific status
+}
+
+message SlotBinding {
+  int32 slot = 1;                                   // 0-9
+  string session_id = 2;
+}
+
+// ─── Hook events ───────────────────────────────────────────────────────────
+
+message HookEvent {
+  HookKind kind = 1;
+  string session_id = 2;
+  google.protobuf.Timestamp at = 3;
+  // Free-form payload (JSON-encoded to support unknown fields). Mac app
+  // mostly cares about session_id + kind for notifications; the action log
+  // can decode payload for "steps to reproduce" reporting.
+  string payload_json = 4;
+}
+
+// ─── Config ────────────────────────────────────────────────────────────────
+
+message Config {
+  int32 tick_interval_sec = 1;
+  string default_project_path = 2;
+  string editor = 3;
+  string theme = 4;                                 // tokyo-night | catppuccin-mocha | rose-pine | nord | gruvbox
+  bool auto_name_sessions = 5;
+  bool copy_claude_settings = 6;
+}
+
+// ─── Request / response messages ───────────────────────────────────────────
+
+message ListSessionsRequest {
+  // Optional repo filter. Empty = all sessions.
+  string repo_root_filter = 1;
+}
+
+message SessionUpdate {
+  SessionUpdateKind kind = 1;
+  Session session = 2;                              // empty for REMOVED
+  string removed_id = 3;                            // populated only for REMOVED
+}
+
+message GetSessionRequest {
+  string id = 1;
+}
+
+message CreateSessionRequest {
+  string title = 1;                                 // optional; auto-named if empty
+  string project_path = 2;                          // working directory
+  string workspace_name = 3;                        // optional; provider creates workspace if set
+  string fork_from_id = 4;                          // optional; --fork-session
+}
+
+message DeleteSessionRequest {
+  string id = 1;
+  DeleteOption option = 2;
+  bool defer_tmux_kill = 3;                         // for undo-delete (5s window)
+}
+
+message RestartSessionRequest {
+  string id = 1;
+}
+
+message RenameSessionRequest {
+  string id = 1;
+  string title = 2;
+}
+
+message AcknowledgeSessionRequest {
+  string id = 1;
+}
+
+message SendKeysRequest {
+  string session_id = 1;
+  // Keys to send. Use literal characters or named keys ("Enter", "Up",
+  // "C-q" for Ctrl-Q, etc. — same syntax as `tmux send-keys`).
+  repeated string keys = 2;
+  // If true, append "Enter" after the keys. Convenience for prompt-style
+  // sends (e.g. quick approve sends ["y"] with submit=true).
+  bool submit = 3;
+}
+
+message CapturePaneRequest {
+  string session_id = 1;
+  // Number of trailing lines to capture. 0 = full visible pane.
+  int32 lines = 2;
+  // If true, strip ANSI escape sequences (default for @terminal usage).
+  bool strip_ansi = 3;
+}
+
+message CapturePaneResponse {
+  string content = 1;
+  google.protobuf.Timestamp captured_at = 2;
+}
+
+message ListReposRequest {}
+
+message RepoUpdate {
+  RepoUpdateKind kind = 1;
+  Repo repo = 2;                                    // empty for REMOVED
+  string removed_root = 3;                          // populated only for REMOVED
+}
+
+message PinRepoRequest {
+  string root = 1;
+}
+
+message UnpinRepoRequest {
+  string root = 1;
+}
+
+message ListWorkspacesRequest {
+  string repo_root = 1;
+}
+
+message ListWorkspacesResponse {
+  repeated Workspace workspaces = 1;
+  string provider_name = 2;                         // "git-worktree" | "shell:<cmd>" | …
+}
+
+message CreateWorkspaceRequest {
+  string repo_root = 1;
+  string name = 2;
+  string base_branch = 3;                           // for git-worktree provider
+  string new_branch = 4;                            // for git-worktree provider
+}
+
+message CreateWorkspaceResponse {
+  Workspace workspace = 1;
+  // If non-empty, creation is in progress and the client should expect a
+  // RepoUpdate / SessionUpdate later. This RPC returns immediately.
+  string pending_id = 2;
+}
+
+message DestroyWorkspaceRequest {
+  string repo_root = 1;
+  string name = 2;
+}
+
+message ListSlotBindingsResponse {
+  repeated SlotBinding bindings = 1;
+}
+
+message BindSlotRequest {
+  int32 slot = 1;
+  string session_id = 2;
+}
+
+message UnbindSlotRequest {
+  int32 slot = 1;
+}
+
+message StreamHookEventsRequest {
+  // Optional session filter. Empty = all sessions.
+  string session_id_filter = 1;
+}
+
+message UpdateConfigRequest {
+  Config config = 1;
+  // Field mask is overkill for V1; clients send the full config.
+  // Daemon may reject malformed configs (returns INVALID_ARGUMENT).
+}

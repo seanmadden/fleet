@@ -12,3 +12,8 @@ var/
 
 # Claude Code local settings (may contain personal paths)
 .claude/settings.local.json
+
+# Swift Package Manager build artifacts (spikes/*)
+.build/
+.swiftpm/
+DerivedData/

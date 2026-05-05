@@ -1,0 +1,14 @@
+# Swift codegen for the Mac app — DEFERRED.
+#
+# Wire this up when macapp/ is created (V1 Mac app work). It will use:
+#   - grpc-swift (Apple's gRPC stack)
+#   - SwiftProtobuf (struct generator)
+# Output target: macapp/Fleet/DaemonClient/Generated/
+#
+# See docs/desktop/stage-0-plan.md and proto/README.md for the full story.
+#
+# Until then, this file exists as a placeholder so the buf workspace knows
+# Swift codegen is a planned consumer and `buf generate --template buf.gen.swift.yaml`
+# fails fast with a sensible error rather than silently doing nothing.
+version: v2
+plugins: []

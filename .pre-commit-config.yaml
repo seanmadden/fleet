@@ -24,3 +24,10 @@ repos:
         language: system
         types: [go]
         pass_filenames: false
+      - id: proto-check
+        name: proto-check
+        description: Verify gen/ matches proto/ via buf generate
+        entry: make proto-check
+        language: system
+        files: '^(proto/|gen/proto/|buf\.yaml$|buf\.gen\.yaml$|buf\.gen\.swift\.yaml$)'
+        pass_filenames: false

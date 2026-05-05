@@ -2,7 +2,7 @@ BINARY := fleet
 BUILD_DIR := build
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
-.PHONY: build run clean test fmt install lint coverage deps vet setup
+.PHONY: build run clean test fmt install lint coverage deps vet setup proto proto-check
 
 build:
 	go build -v -ldflags "-s -w -X main.version=$(VERSION)" -o $(BUILD_DIR)/$(BINARY) ./cmd/fleet
@@ -44,3 +44,13 @@ install: build
 
 setup:
 	pre-commit install
+
+proto:
+	buf generate
+
+proto-check:
+	@TMP=$$(mktemp -d) && trap 'rm -rf $$TMP' EXIT && \
+		buf generate --output $$TMP && \
+		diff -r $$TMP/gen/proto gen/proto > /dev/null && \
+		echo "proto: gen/ is up to date" || \
+		(echo "proto: gen/ is out of date — run 'make proto' and commit the result"; exit 1)
