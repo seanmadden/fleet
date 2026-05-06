@@ -435,6 +435,42 @@ func TestClient_Mutation_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestClient_SoftRestore_AfterSoftDelete reproduces the exact path the TUI
+// takes for `d` then `z` in daemon mode — deferDelete calls SoftDelete to
+// stash the row, then undoDelete calls SoftRestore (NOT RestoreDeleted) to
+// bring it back. If SoftRestore on the client doesn't reach the daemon, the
+// tombstone evicts after 30s and the tmux pane dies even though the UI
+// shows the session as restored.
+func TestClient_SoftRestore_AfterSoftDelete(t *testing.T) {
+	fake := newFakeSvc()
+	fake.addSession(&session.Session{ID: "doomed", Title: "doomed", ProjectPath: "/tmp", Status: session.StatusRunning, CreatedAt: time.Now()})
+
+	c, stop := startTestClient(t, fake)
+	defer stop()
+	if !waitFor(2*time.Second, func() bool { return c.GetSession("doomed") != nil }) {
+		t.Fatalf("snapshot of doomed never landed")
+	}
+
+	row, err := c.SoftDelete("doomed")
+	if err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+	sess := &session.Session{ID: row.ID, Title: row.Title, ProjectPath: row.ProjectPath}
+
+	// The TUI keeps the live pointer + row in its undo stack and calls
+	// SoftRestore on `z`. Both forms (with sess, with row only) must
+	// reach the daemon.
+	if err := c.SoftRestore(sess, row); err != nil {
+		t.Fatalf("SoftRestore: %v", err)
+	}
+	if c.GetSession("doomed") == nil {
+		t.Errorf("session not in cache immediately after SoftRestore")
+	}
+	if fake.GetSession("doomed") == nil {
+		t.Errorf("daemon-side fake never received restore — tombstone would evict")
+	}
+}
+
 func TestClient_SoftDelete_RestoreRoundTrip(t *testing.T) {
 	fake := newFakeSvc()
 	fake.addSession(&session.Session{ID: "doomed", Title: "doomed", ProjectPath: "/tmp", Status: session.StatusRunning, CreatedAt: time.Now()})

@@ -46,6 +46,15 @@ func main() {
 		return
 	}
 
+	// TUI flags (anything prefixed with `--` other than the help/version
+	// flags handled in the switch below) get routed through to runTUI,
+	// which parses os.Args itself. Keeps `fleet --standalone` working
+	// without requiring users to type a redundant `fleet tui --standalone`.
+	if strings.HasPrefix(args[0], "--") && args[0] != "--help" && args[0] != "--version" {
+		runTUI()
+		return
+	}
+
 	switch args[0] {
 	case "add":
 		if len(args) < 2 {

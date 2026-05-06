@@ -455,30 +455,50 @@ func (c *Client) SoftDelete(id string) (*session.SessionRow, error) {
 	return row, nil
 }
 
-// RestoreDeleted asks the daemon to revive the most recently soft-deleted
-// session by ID. The daemon returns the rehydrated proto Session; we apply
-// it to the local cache immediately (the next stream tick will be a benign
-// duplicate ADDED).
+// RestoreDeleted and SoftRestore both pop the daemon's tombstone via the
+// RestoreSession RPC. The Service interface exposes two methods because the
+// in-process implementation distinguishes "I have the live pointer"
+// (SoftRestore) from "I only have the row" (RestoreDeleted) — the live
+// pointer matters in-process to keep the same `*session.Session` instance
+// after undo. Daemon mode has no such distinction: the daemon owns the
+// canonical session and the client just re-mirrors whatever it returns.
+//
+// In practice the TUI's undo path calls SoftRestore (it holds the live
+// pointer in its undo stack), so getting that one wrong silently breaks
+// `z` — the daemon never knows you wanted the tombstone back, and 30s
+// later the eviction timer kills the tmux pane.
 func (c *Client) RestoreDeleted(row *session.SessionRow) error {
 	if row == nil {
 		return errors.New("nil row")
 	}
+	return c.restore(row.ID)
+}
+
+func (c *Client) SoftRestore(sess *session.Session, row *session.SessionRow) error {
+	switch {
+	case sess != nil:
+		return c.restore(sess.ID)
+	case row != nil:
+		return c.restore(row.ID)
+	default:
+		return errors.New("nil session and nil row")
+	}
+}
+
+// restore is the shared body for both RestoreDeleted and SoftRestore.
+// Calls the daemon's RestoreSession RPC, applies the rehydrated session
+// to the local cache immediately so the UI repaints without waiting for
+// the next stream tick (which will deliver a benign duplicate ADDED).
+func (c *Client) restore(id string) error {
 	ctx, cancel := c.callCtx()
 	defer cancel()
-	resp, err := c.api.RestoreSession(ctx, &fleetv1.RestoreSessionRequest{Id: row.ID})
+	resp, err := c.api.RestoreSession(ctx, &fleetv1.RestoreSessionRequest{Id: id})
 	if err != nil {
 		return err
 	}
 	c.applySessionImmediate(protoToSession(resp))
 	return nil
 }
-
-// SoftRestore is a no-op on the client — the server-side restore (driven by
-// RestoreDeleted above) already re-inserted the session, and the next stream
-// tick will deliver the ADDED. The interface keeps this method for
-// in-process symmetry, but daemon mode has no concept of a "live local
-// pointer to preserve."
-func (c *Client) SoftRestore(_ *session.Session, _ *session.SessionRow) error { return nil }
 
 // ── Cache helpers (called from RPC paths and stream paths) ─────────────────
 

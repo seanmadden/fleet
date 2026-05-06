@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	fleetv1 "github.com/brizzai/fleet/gen/proto/fleet/v1"
 	"github.com/brizzai/fleet/internal/config"
@@ -110,7 +111,23 @@ func runDaemon() {
 	go func() {
 		sig := <-sigCh
 		debuglog.Logger.Info("daemon received signal, shutting down", "signal", sig)
-		grpcServer.GracefulStop()
+		// GracefulStop alone hangs forever here because ListSessions /
+		// ListRepos are persistent server-streaming RPCs — they never
+		// finish "in-flight" until the client disconnects. So we give
+		// any unary RPC a 2s grace period to complete and then hard-Stop
+		// to force the streams shut. Without this, killing the daemon
+		// leaves a zombie process that blocks until every TUI exits.
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			grpcServer.GracefulStop()
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(2 * time.Second):
+			debuglog.Logger.Info("graceful stop timed out — forcing")
+			grpcServer.Stop()
+		}
 	}()
 
 	fmt.Fprintf(os.Stderr, "fleet daemon listening on %s\n", sockPath)
