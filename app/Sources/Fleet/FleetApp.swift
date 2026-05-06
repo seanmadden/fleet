@@ -28,6 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         FontRegistration.register()
         NSApp.setActivationPolicy(.regular)
+        // Override the generic SwiftPM-binary Dock icon with the brand
+        // mark on a dark squircle. This is the runtime equivalent of an
+        // AppIcon assets catalog — once we ship a real .app bundle the OS
+        // will pick the bundled icon up directly and we can drop this.
+        if let icon = AppIconRenderer.makeNSImage() {
+            NSApp.applicationIconImage = icon
+        }
         // Force-dark appearance on every window so the title bar doesn't
         // sit as a bright slab above a dark terminal pane. Also dissolves
         // the hard seam at the top of the sidebar. This is hygiene, not a
