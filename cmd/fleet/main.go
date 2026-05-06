@@ -65,6 +65,8 @@ func main() {
 		handleChromeHost()
 	case "hooks":
 		handleHooksCmd(args[1:])
+	case "daemon":
+		runDaemon()
 	case "update":
 		runUpdate()
 	case "version", "--version", "-v":
@@ -279,6 +281,7 @@ Usage:
   fleet list         List all sessions
   fleet remove <id>  Remove a session
   fleet hooks <install|uninstall|status>  Manage Claude Code hooks
+  fleet daemon       Run the gRPC daemon (foreground)
   fleet update       Update to latest version
   fleet version      Show version
   fleet help         Show this help`)

@@ -17,6 +17,8 @@ This plan is the lesson from `feature/macos-wails-app` (March 2026): that branch
 
 ### PR 1 — Proto schema + buf toolchain + committed generated code
 
+> **Status (2026-05-06)**: ✅ landed on `fleet-ui` as `1ca1622`. Per the holding decision below, PRs 1–4 ride the same branch and bundle into one MVP-shaped PR; not opened in isolation.
+
 **Goal**: lock the daemon contract before touching any code.
 
 Files:
@@ -44,6 +46,8 @@ Estimated diff: +500 lines generated, +50 lines hand-written.
 ---
 
 ### PR 2 — Resurrect `internal/service/SessionService` and `internal/ptybridge`
+
+> **Status (2026-05-06)**: ✅ landed on `fleet-ui` as `cd8a7ef` + gap-fill `cb13abe`. Service exposes the full surface the TUI needs (auto-naming, slot bindings, undo-delete via `SoftDelete`/`SoftRestore`, fork, pin/unpin, priority queue). `internal/ptybridge` carries `creack/pty` + clean `tmux detach-client` semantics (incident fix `b748109`).
 
 **Goal**: bring the working observer-pattern service layer back to master, without changing TUI behavior.
 
@@ -73,6 +77,8 @@ Estimated diff: +1,500 lines, mostly resurrected.
 
 ### PR 3 — TUI calls SessionService internally (still in-process)
 
+> **Status (2026-05-06)**: ✅ landed on `fleet-ui` as `2a8d8df` (mutations routed through service) + `9510e2c` (UI worker replaced with service subscription). UI is now a `service.Observer`; all polling lives in `SessionService.statusWorkerCycle`. The pre-PR-3 `gitInfoCache` race is gone — the cache is single-writer on the bubbletea goroutine.
+
 **Goal**: refactor `internal/ui/` to consume SessionService for all mutations and subscribe to its events, instead of poking `internal/session`, `internal/storage`, `internal/git`, `internal/github` directly.
 
 This is the biggest behavioral-risk PR — large mechanical refactor. Split if it grows past ~1,500 LoC.
@@ -94,6 +100,10 @@ Estimated diff: +800/-1,200 lines.
 ---
 
 ### PR 4 — `fleet daemon` subcommand serving over Unix socket
+
+> **Status (2026-05-06)**: ✅ landed on `fleet-ui`. New `internal/daemonsrv` package with `socket.go` (stale-cleanup vs live-daemon detection), `convert.go` (proto/internal translation, `safeIsAlive` guard), `server.go` (MVP RPC subset), `stream.go` (per-stream fingerprint diffing for `ListSessions`/`ListRepos`). `cmd/fleet/daemon.go` boots the service, registers gRPC + reflection, graceful shutdown on SIGINT/SIGTERM.
+>
+> **Stubbed (codes.Unimplemented), filled in later PRs**: `SendKeys`, `CapturePane`, `ListWorkspaces`/`CreateWorkspace`/`DestroyWorkspace`, `GetConfig`/`UpdateConfig`, `StreamHookEvents`. `DeleteOption` and `defer_tmux_kill` on `DeleteSessionRequest` are also ignored — undo-delete remains TUI-internal until a client demands daemon-driven cleanup.
 
 **Goal**: introduce the daemon process. TUI is not yet a client.
 

@@ -12,6 +12,7 @@ These docs are **pre-implementation brainstorming**. Decisions here are working 
 | [competitive-landscape.md](./competitive-landscape.md) | Conductor deep-dive, peer scan (Crystal, Claudia, Warp, Cline, Aider), fleet's natural moats and gaps |
 | [architecture.md](./architecture.md) | Process model (daemon + clients), IPC (gRPC over Unix socket), tmux client/server topology, Swift app structure, migration path |
 | [ux-design.md](./ux-design.md) | V1 layout, sidebar, status grouping, ASCII mockups, keybindings, V2 multi-pane sketch, notifications |
+| [design-system.md](./design-system.md) | Brand & visual system: personality, voice, color tokens, typography, spacing, shape, motion, iconography, accent rules |
 | [roadmap.md](./roadmap.md) | Staged build plan: V1 TUI parity → V2 multi-pane + diff + notifs → V3+ |
 | [stage-0-plan.md](./stage-0-plan.md) | Concrete PR-by-PR sequence for the daemon extraction (Stage 0). 5 PRs, ~3 weeks, TUI never breaks. |
 | [open-questions.md](./open-questions.md) | Decisions deferred: pane warm-cache, setup scripts, broadcast input, chat-wrap vs raw terminal, etc. |
