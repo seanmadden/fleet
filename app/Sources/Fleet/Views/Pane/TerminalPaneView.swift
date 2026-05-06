@@ -32,7 +32,12 @@ struct TerminalPaneView: NSViewRepresentable {
         let term = LocalProcessTerminalView(frame: .zero)
         term.translatesAutoresizingMaskIntoConstraints = false
         term.font = Self.preferredFont()
-        term.allowMouseReporting = true
+        // Mouse reporting *off* so click+drag does native Mac text selection
+        // (and Cmd+C copies). We forward scroll-wheel ourselves via the
+        // local NSEvent monitor below, so tmux still scrolls correctly.
+        // Losing tmux's click-on-pane-to-focus is fine: Claude is
+        // keyboard-driven and we have one pane per session.
+        term.allowMouseReporting = false
         term.optionAsMetaKey = true
 
         // Placeholder palette — Tokyo Night. Real visual system comes from
@@ -52,8 +57,13 @@ struct TerminalPaneView: NSViewRepresentable {
         ])
 
         context.coordinator.terminal = term
+        context.coordinator.installScrollMonitor(for: term)
         scheduleAttach(view: term, coordinator: context.coordinator)
         return container
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.removeScrollMonitor()
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
@@ -118,9 +128,106 @@ struct TerminalPaneView: NSViewRepresentable {
         }
     }
 
+    @MainActor
     final class Coordinator {
         var terminal: LocalProcessTerminalView?
         var attachedTmuxName: String?
+        private var scrollMonitor: Any?
+
+        // SwiftTerm's `scrollWheel` is `public override` (not `open`), so
+        // we can't subclass it. Its default scrolls SwiftTerm's own
+        // (mostly empty) scrollback buffer instead of forwarding the
+        // event upstream — when we're attached to a full-screen tmux app
+        // like Claude Code, that paints stale scrollback over the live
+        // alt-screen ("scrolling looks messed up") and often appears to
+        // do nothing because the scrollback is blank.
+        //
+        // The same monitor also rewrites a few Mac-standard keyboard
+        // shortcuts that SwiftTerm doesn't translate by default:
+        //   Cmd+Left   → ^A (start of line)
+        //   Cmd+Right  → ^E (end of line)
+        //   Cmd+Backspace → ^U (delete to start of line)
+        //   Cmd+Delete (forward) → ^K (delete to end of line)
+        //
+        // We install a local NSEvent monitor that catches these events
+        // targeted at the terminal *before* SwiftTerm sees them and
+        // returns nil to swallow them. For scroll, the wheel event is
+        // forwarded as an SGR (mode 1006) escape sequence (tmux has
+        // `mouse on` for fleet sessions). For Cmd-shortcuts, the
+        // matching control byte is sent.
+        func installScrollMonitor(for term: LocalProcessTerminalView) {
+            removeScrollMonitor()
+            scrollMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.scrollWheel, .keyDown]
+            ) { [weak self, weak term] event in
+                // Local event monitors are always delivered on the main
+                // thread but AppKit hasn't annotated them as @MainActor.
+                // We do all the AppKit work inside `assumeIsolated` and
+                // only flow a Bool back so NSEvent (non-Sendable) doesn't
+                // need to cross the actor boundary.
+                var consumed = false
+                MainActor.assumeIsolated {
+                    consumed = self?.handleMonitoredEvent(event, term: term) ?? false
+                }
+                return consumed ? nil : event
+            }
+        }
+
+        @MainActor
+        private func handleMonitoredEvent(_ event: NSEvent, term: LocalProcessTerminalView?) -> Bool {
+            guard let term, term.window === event.window else { return false }
+
+            switch event.type {
+            case .scrollWheel:
+                let pointInTerm = term.convert(event.locationInWindow, from: nil)
+                guard term.bounds.contains(pointInTerm) else { return false }
+                let dy = event.scrollingDeltaY
+                guard dy != 0 else { return true }   // consume zero-delta events too
+                let absTicks = max(1, min(8, Int(abs(dy / 4))))
+                let button = dy > 0 ? 64 : 65   // SGR: 64 = wheel up, 65 = wheel down
+                let bytes = ArraySlice(Array("\u{1B}[<\(button);1;1M".utf8))
+                for _ in 0..<absTicks {
+                    term.send(source: term, data: bytes)
+                }
+                return true
+
+            case .keyDown:
+                guard term.window?.firstResponder === term else { return false }
+                guard event.modifierFlags.contains(.command) else { return false }
+                guard let bytes = mapCommandKey(event) else { return false }
+                term.send(source: term, data: ArraySlice(bytes))
+                return true
+
+            default:
+                return false
+            }
+        }
+
+        nonisolated private func mapCommandKey(_ event: NSEvent) -> [UInt8]? {
+            guard let chars = event.charactersIgnoringModifiers,
+                  let scalar = chars.unicodeScalars.first else { return nil }
+            switch Int(scalar.value) {
+            case NSLeftArrowFunctionKey:    return [0x01]   // ^A
+            case NSRightArrowFunctionKey:   return [0x05]   // ^E
+            case NSDeleteCharacter,         // backspace key on Mac is "delete"
+                 0x7F:                      return [0x15]   // ^U
+            case NSDeleteFunctionKey:       return [0x0B]   // ^K (Fn+Delete / Cmd+Delete forward)
+            default:                        return nil
+            }
+        }
+
+        func removeScrollMonitor() {
+            if let m = scrollMonitor {
+                NSEvent.removeMonitor(m)
+                scrollMonitor = nil
+            }
+        }
+        // Cleanup is driven by `dismantleNSView` (SwiftUI lifecycle hook),
+        // not deinit — Swift 6 strict concurrency rejects accessing
+        // non-Sendable state from a non-isolated deinit, and the monitor
+        // ref is `Any?` (not Sendable). dismantleNSView runs on the main
+        // actor so it can call removeScrollMonitor() safely.
+
         // Resolve once at coordinator creation (i.e. first view materialise).
         // tmux is required for any session to be useful; if it's missing the
         // app should fail loudly elsewhere — this is a sane fallback.

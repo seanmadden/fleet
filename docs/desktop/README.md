@@ -16,6 +16,7 @@ These docs are **pre-implementation brainstorming**. Decisions here are working 
 | [roadmap.md](./roadmap.md) | Staged build plan: V1 TUI parity → V2 multi-pane + diff + notifs → V3+ |
 | [stage-0-plan.md](./stage-0-plan.md) | Concrete PR-by-PR sequence for the daemon extraction (Stage 0). 5 PRs, ~3 weeks, TUI never breaks. |
 | [stage-1-slice-1.md](./stage-1-slice-1.md) | Implementation log for V1 Mac app slice 1: skeleton + DaemonClient + sidebar + SwiftTerm pane (no mutations). Landed 2026-05-07. |
+| [research-2026-05-07.md](./research-2026-05-07.md) | 10-agent competitive deep-dive synthesis: three architectural camps (terminal-attach / rebuild / server-side emulator), feature-by-feature scorecard vs Conductor / Crystal / Claudia / Cline / Claude Squad, SwiftTerm stack risks + mitigations, things to steal. Per-product raw reports in [`research-2026-05-07/`](./research-2026-05-07/). |
 | [open-questions.md](./open-questions.md) | Decisions deferred: pane warm-cache, setup scripts, broadcast input, chat-wrap vs raw terminal, etc. |
 
 ## TL;DR
