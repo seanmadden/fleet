@@ -61,6 +61,27 @@ Three real fixes caught only by manually running against a real daemon, not by t
 6. Dead session selection → placeholder shown, no broken `tmux attach` invocation.
 7. No regressions in TUI: `make build && fleet --tui` still works against the same daemon.
 
+## Cosmetic + UX follow-ups (commits `474f8a4` and `b07437f`, 2026-05-07)
+
+After the main slice landed, two small follow-up passes made the pane look and feel like a real terminal instead of a stock SwiftTerm widget. Both stay placeholder-grade — the UX designer still owns the real visual system.
+
+### Cosmetic polish (`474f8a4`)
+- **Bundled JetBrains Mono** registered via `CTFontManagerRegisterFontURLs` at `applicationDidFinishLaunching`. PostScript name is `JetBrainsMono-Regular` (no space), so a naive `NSFont(name: "JetBrains Mono-Regular")` lookup silently falls back to Menlo — first cut shipped that bug.
+- **10pt internal padding** by wrapping `LocalProcessTerminalView` in an NSView container with edge constraints — SwiftTerm has no built-in padding API.
+- **Tokyo Night palette** via `installColors([Color])` plus matching `nativeBackgroundColor` / `nativeForegroundColor` / `caretColor` / `selectedTextBackgroundColor`. SwiftTerm.Color is a class (non-Sendable) so the array gets minted per call instead of `static let`. Color hex → `Color(red:green:blue:)` requires mirroring 8-bit values into 16-bit components (`UInt16(byte) * 0x101`).
+
+### Window chrome + terminal UX (`b07437f`)
+- **Force-dark window appearance** (`NSApp.appearance = NSAppearance(named: .darkAqua)`), transparent title bar, hidden title text, `.fullSizeContentView`, window background set to Tokyo Night so the title-bar slab and resize gutters all read as one surface.
+- **Mouse reporting off** (`allowMouseReporting = false`) so click+drag does native Mac selection (Cmd+C copies). Claude TUI is keyboard-driven so we lose nothing tmux-side.
+- **Local NSEvent monitor** (`NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .keyDown])`) installed by the Coordinator. Two jobs:
+  - **Wheel forwarding**: SwiftTerm's `scrollWheel` always scrolls its own (mostly empty) scrollback — never reports upstream. With a full-screen tmux app like Claude that paints stale scrollback over the live alt-screen ("scrolling looks messed up"). We emit SGR mode-1006 wheel sequences (`ESC [ < button ; 1 ; 1 M`, button 64=up / 65=down) so tmux receives them and does the right thing.
+  - **Cmd-key remapping**: SwiftTerm doesn't translate Mac-standard line-edit shortcuts. We rewrite Cmd+Left → `^A`, Cmd+Right → `^E`, Cmd+Backspace → `^U`, Cmd+Delete → `^K`. Gated on `term.window?.firstResponder === term` so we don't eat keystrokes meant for the sidebar's filter field.
+
+### Smoke-test gotchas (Swift 6 strict concurrency)
+- **`SwiftTerm.LocalProcessTerminalView.scrollWheel` is `public override`, not `open`.** Subclassing to override it fails with "overriding non-open instance method outside of its defining module." That's why we use a local NSEvent monitor instead of subclassing.
+- **`NSEvent.addLocalMonitorForEvents` handler isn't `@MainActor`** but is always delivered on the main thread. Doing AppKit work inside leaks "actor-isolated" warnings/errors. The pattern that works: mark `Coordinator` as `@MainActor`, do the work in a `@MainActor` helper, and use `MainActor.assumeIsolated` to call it from the closure — but only flow a Bool back so non-Sendable `NSEvent` doesn't have to cross the actor boundary.
+- **Strict-concurrency `deinit` can't access non-Sendable state.** `scrollMonitor` is `Any?` (the opaque token from `addLocalMonitorForEvents`) and Swift 6 rejects touching it from a non-isolated `deinit`. Cleanup goes through SwiftUI's `dismantleNSView(_:coordinator:)` lifecycle hook instead, which is `@MainActor`-safe.
+
 ## Out of scope (queued for slice 2)
 
 - All mutations (CreateSession, DeleteSession, SoftDelete/Restore, RestartSession, RenameSession, AcknowledgeSession, PinRepo / UnpinRepo, BindSlot / UnbindSlot, SendKeys for `Y` quick-approve).
