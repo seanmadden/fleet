@@ -15,6 +15,7 @@ These docs are **pre-implementation brainstorming**. Decisions here are working 
 | [design-system.md](./design-system.md) | Brand & visual system: personality, voice, color tokens, typography, spacing, shape, motion, iconography, accent rules |
 | [roadmap.md](./roadmap.md) | Staged build plan: V1 TUI parity → V2 multi-pane + diff + notifs → V3+ |
 | [stage-0-plan.md](./stage-0-plan.md) | Concrete PR-by-PR sequence for the daemon extraction (Stage 0). 5 PRs, ~3 weeks, TUI never breaks. |
+| [stage-1-slice-1.md](./stage-1-slice-1.md) | Implementation log for V1 Mac app slice 1: skeleton + DaemonClient + sidebar + SwiftTerm pane (no mutations). Landed 2026-05-07. |
 | [open-questions.md](./open-questions.md) | Decisions deferred: pane warm-cache, setup scripts, broadcast input, chat-wrap vs raw terminal, etc. |
 
 ## TL;DR

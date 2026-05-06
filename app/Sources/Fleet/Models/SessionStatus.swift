@@ -8,6 +8,18 @@ enum SessionStatus: String, CaseIterable {
     case finished
     case error
 
+    init(proto: FleetStatus) {
+        switch proto {
+        case .starting: self = .starting
+        case .idle:     self = .idle
+        case .running:  self = .running
+        case .waiting:  self = .waiting
+        case .finished: self = .finished
+        case .error:    self = .error
+        case .unspecified, .UNRECOGNIZED: self = .idle
+        }
+    }
+
     var icon: String {
         switch self {
         case .running, .finished: "●"

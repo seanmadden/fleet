@@ -19,6 +19,10 @@ Pure refactor of the existing TUI. No new features. Goal: TUI works identically 
 
 The Mac app is *just* a native shell around the existing TUI behavior. Single embedded session pane, hot-swap on selection.
 
+### Status (2026-05-07): Slice 1 of 5 landed on `fleet-ui`
+
+Slice scoped at planning time as "skeleton + DaemonClient + sidebar + SwiftTerm pane (no mutations)". All of it works end-to-end against a real daemon on the user's machine — see [`stage-1-slice-1.md`](./stage-1-slice-1.md) for the implementation log, smoke-test gotchas, and what's queued for the next slice (mutations, dialogs, menu bar). Per the bundled-PR holding decision, this stays unmerged on `fleet-ui` until the Mac app demos something.
+
 ### Must-have
 
 - SwiftUI sidebar with same data as TUI (repos, sessions, statuses, slot bindings, filter).

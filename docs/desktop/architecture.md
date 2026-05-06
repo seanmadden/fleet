@@ -1,6 +1,8 @@
 # Architecture — fleet Mac App
 
 > **SwiftTerm spike validated 2026-05-05** — `spikes/swiftterm-spike/` proved the rendering claim: a `LocalProcessTerminalView` spawned with `tmux attach-session -t <fleet_session>` displays the Claude Code TUI identically to Terminal.app. PTY data flows directly between SwiftTerm and tmux; no proxy in the path.
+>
+> **Tmux topology amendment 2026-05-07** — V1 implementation reality: the daemon spawns sessions on the **host's default tmux server**, not on a fleet-private socket. Clients (Mac app, TUI) attach with plain `tmux attach-session -t fleet_<id>` (no `-S` flag). The "private socket at `~/.config/fleet/tmux.sock`" plan in this doc was superseded; sections below still reference the original plan for historical context.
 
 ## High-level topology
 

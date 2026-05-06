@@ -7,5 +7,11 @@ struct Session: Identifiable, Hashable {
     var branch: String
     var pr: PRInfo?
     var slot: Int?
-    var tmuxName: String?  // when set, the terminal pane can attach to a real tmux session
+
+    var repoRoot: String        // absolute project path; matches Repo.id
+    var projectPath: String     // working directory (often == repoRoot for non-worktree)
+    var tmuxName: String?       // nil when the session has no live tmux pane
+    var isAlive: Bool
+    var acknowledged: Bool
+    var workspaceName: String   // worktree name; empty for non-worktree sessions
 }
