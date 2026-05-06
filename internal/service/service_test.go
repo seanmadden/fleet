@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -10,12 +11,90 @@ import (
 	"github.com/brizzai/fleet/internal/session"
 )
 
+// isolateLiveTmux redirects every child `tmux` invocation in the test to a
+// fresh per-test socket directory so the user's real tmux server is never
+// touched.
+//
+// Why both TMUX_TMPDIR and unsetting TMUX are required:
+//
+//	tmux's socket-path resolution checks TMUX (the env var that's set
+//	*inside* a tmux session, with the literal socket path of the parent
+//	server) BEFORE falling back to TMUX_TMPDIR. When `go test` is run
+//	from a fleet-managed Claude session — i.e. from inside tmux — the
+//	test process inherits TMUX=/private/tmp/tmux-501/default,..., and
+//	plain `tmux list-windows -a` (called from statusWorkerCycle via
+//	tmux.RefreshSessionCache) honours that inherited path, ignoring
+//	whatever we set TMUX_TMPDIR to. Result: the test queries the live
+//	server even with TMUX_TMPDIR pointed at a temp dir.
+//
+//	t.Setenv("TMUX", "") doesn't help — tmux only checks if TMUX is
+//	non-NULL, and Setenv with an empty string is still NULL-distinct.
+//	We need a real os.Unsetenv, restored in t.Cleanup.
+//
+// Mirrors the helper of the same name in internal/ptybridge/bridge_test.go.
+// Kept duplicated rather than extracted because the test surface is small
+// and pulling in a shared testutil package across feature areas adds more
+// complexity than it removes.
+func isolateLiveTmux(t *testing.T) {
+	t.Helper()
+	// See bridge_test.go's isolateLiveTmux for why /tmp instead of t.TempDir():
+	// macOS AF_UNIX sun_path is 104 bytes and `t.TempDir()` paths blow past
+	// it once tmux appends `/tmux-<uid>/default`. /tmp keeps the socket path
+	// short enough to actually bind.
+	dir, err := os.MkdirTemp("/tmp", "fleet-tmux-iso-")
+	if err != nil {
+		t.Fatalf("mkdir tmux isolation tmpdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("TMUX_TMPDIR", dir)
+	if val, ok := os.LookupEnv("TMUX"); ok {
+		_ = os.Unsetenv("TMUX")
+		t.Cleanup(func() { _ = os.Setenv("TMUX", val) })
+	}
+	if val, ok := os.LookupEnv("TMUX_PANE"); ok {
+		_ = os.Unsetenv("TMUX_PANE")
+		t.Cleanup(func() { _ = os.Setenv("TMUX_PANE", val) })
+	}
+}
+
 // newTestService builds a SessionService backed by a fresh SQLite DB in
 // t.TempDir() and pre-loads slot bindings + pinned repos. It does NOT call
 // Start() — that path injects Claude hooks and spawns the background worker,
 // which we don't want in unit tests.
+//
+// CRITICAL: isolate every service test from the user's live tmux server.
+//
+// Even though we don't call Start() here, tests like
+// TestStatusWorkerCycle_AutoNamesFromFirstPrompt call s.statusWorkerCycle()
+// directly, which at service.go:629 invokes tmux.RefreshSessionCache() —
+// shelling out `tmux list-windows -a`. Without isolation, that subprocess
+// hits the user's live tmux server (the same server hosting fleet sessions
+// and manual tmux sessions).
+//
+// 2026-05-06 incident timeline (instructive, please don't repeat the
+// false starts):
+//
+//   - `go test -race -count=1 ./...` on this branch silently disconnected
+//     the user from unrelated tmux sessions.
+//   - First fix attempt: TMUX_TMPDIR override on bridge_test.go only.
+//     Insufficient — service tests still hit live tmux.
+//   - Second fix attempt: TMUX_TMPDIR override on newTestService too.
+//     STILL insufficient — even with TMUX_TMPDIR set, tmux clients
+//     resolve socket path from TMUX env var first when it's set, which
+//     it is whenever the test is launched from inside a tmux session
+//     (i.e. always, when running fleet's own tests via Claude inside a
+//     fleet-managed pane). TMUX_TMPDIR was being silently ignored.
+//   - Actual fix (what isolateLiveTmux now does): also unset TMUX +
+//     TMUX_PANE for the duration of the test. Then plain `tmux ...`
+//     calls fall through to the TMUX_TMPDIR resolution and land on the
+//     isolated per-test socket.
+//
+// isolateLiveTmux lives in this file (not in newTestService inline) so the
+// rationale is anchored next to the helper, and so future regressions that
+// add tests outside the newTestService path can call it directly.
 func newTestService(t *testing.T) (*SessionService, *session.StateDB) {
 	t.Helper()
+	isolateLiveTmux(t)
 	db, err := session.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("session.Open: %v", err)
