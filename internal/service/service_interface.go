@@ -16,6 +16,7 @@ type Service interface {
 	Subscribe(Observer)
 	Unsubscribe(Observer)
 	TriggerRefresh()
+	EnqueuePriority(id string)
 
 	// Queries.
 	Sessions() []*session.Session
@@ -40,6 +41,7 @@ type Service interface {
 
 	// Undo-delete.
 	SnapshotForUndo(id string) (*session.SessionRow, error)
+	SoftDelete(id string) (*session.SessionRow, error)
 	RestoreDeleted(row *session.SessionRow) error
 
 	// Auto-naming hooks.

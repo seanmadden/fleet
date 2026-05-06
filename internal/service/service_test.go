@@ -223,6 +223,97 @@ func TestOnFirstPrompt_GeneratesTitleOnceAndRespectsManual(t *testing.T) {
 	}
 }
 
+func TestSoftDelete_RoundTrip(t *testing.T) {
+	s, db := newTestService(t)
+	row := &session.SessionRow{
+		ID: "soft", Title: "draft", ProjectPath: "/tmp",
+		CreatedAt:    time.Now().Truncate(time.Second),
+		LastAccessed: time.Now().Truncate(time.Second),
+	}
+	seedSession(t, s, row)
+	if err := s.BindSlot(3, "soft"); err != nil {
+		t.Fatalf("BindSlot: %v", err)
+	}
+
+	snap, err := s.SoftDelete("soft")
+	if err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+	if snap == nil || snap.ID != "soft" {
+		t.Fatalf("SoftDelete row: want id=soft, got %+v", snap)
+	}
+	if got := s.GetSession("soft"); got != nil {
+		t.Errorf("session should be gone from memory")
+	}
+	if rows, _ := db.LoadSessions(); len(rows) != 0 {
+		t.Errorf("session should be gone from storage, got %d rows", len(rows))
+	}
+	if _, ok := s.SlotBindings()[3]; ok {
+		t.Errorf("slot binding should be pruned")
+	}
+
+	if _, err := s.SoftDelete("missing"); err == nil {
+		t.Errorf("SoftDelete on missing id: want error, got nil")
+	}
+
+	// Round-trip via RestoreDeleted.
+	if err := s.RestoreDeleted(snap); err != nil {
+		t.Fatalf("RestoreDeleted: %v", err)
+	}
+	if got := s.GetSession("soft"); got == nil {
+		t.Fatalf("session should be back in memory after restore")
+	}
+}
+
+func TestEnqueuePriority_BufferAndDrop(t *testing.T) {
+	s, _ := newTestService(t)
+	// 256 fits, 257th drops silently — must not block or panic.
+	for range 257 {
+		s.EnqueuePriority("id")
+	}
+	if got := len(s.priorityStatusUpdates); got != 256 {
+		t.Errorf("priorityStatusUpdates len: want 256, got %d", got)
+	}
+}
+
+func TestStatusWorkerCycle_AutoNamesFromFirstPrompt(t *testing.T) {
+	cfg := &config.Config{}
+	if !cfg.IsAutoNameEnabled() {
+		t.Skip("auto-name disabled by default")
+	}
+	s, db := newTestService(t)
+	row := &session.SessionRow{
+		ID: "auto", Title: "untitled", ProjectPath: "/tmp",
+		CreatedAt:   time.Now(),
+		FirstPrompt: "please refactor the user dashboard component",
+	}
+	seedSession(t, s, row)
+
+	s.statusWorkerCycle()
+
+	sess := s.GetSession("auto")
+	if sess == nil {
+		t.Fatalf("session vanished")
+	}
+	if sess.Title == "untitled" || sess.Title == "" {
+		t.Errorf("Title should be auto-generated, got %q", sess.Title)
+	}
+	if !sess.TitleGenerated {
+		t.Errorf("TitleGenerated should be true")
+	}
+	rows, _ := db.LoadSessions()
+	if len(rows) != 1 || rows[0].Title == "untitled" || !rows[0].TitleGenerated {
+		t.Errorf("storage row: title=%q TitleGenerated=%v", rows[0].Title, rows[0].TitleGenerated)
+	}
+
+	// Second cycle shouldn't change the title (TitleGenerated locks it).
+	titleAfterFirst := sess.Title
+	s.statusWorkerCycle()
+	if sess.Title != titleAfterFirst {
+		t.Errorf("second cycle re-titled: want %q, got %q", titleAfterFirst, sess.Title)
+	}
+}
+
 func TestOnPromptCount_ResetsTitleGenerated(t *testing.T) {
 	s, db := newTestService(t)
 	seedSession(t, s, &session.SessionRow{

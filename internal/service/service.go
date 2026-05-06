@@ -47,12 +47,13 @@ type SessionService struct {
 	ghAvailable bool
 
 	// Background worker.
-	statusTrigger chan struct{}
-	statusRRIndex int
-	gitRRIndex    int
-	ctx           context.Context
-	cancel        context.CancelFunc
-	workerStarted bool
+	statusTrigger         chan struct{}
+	priorityStatusUpdates chan string
+	statusRRIndex         int
+	gitRRIndex            int
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	workerStarted         bool
 
 	// Observers.
 	observerMu sync.RWMutex
@@ -64,15 +65,16 @@ type SessionService struct {
 func NewSessionService(storage *session.StateDB, cfg *config.Config) *SessionService {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &SessionService{
-		storage:       storage,
-		cfg:           cfg,
-		sessionByID:   make(map[string]*session.Session),
-		gitInfoCache:  make(map[string]*git.RepoInfo),
-		slotBindings:  make(map[int]string),
-		pinnedRepos:   make(map[string]bool),
-		statusTrigger: make(chan struct{}, 1),
-		ctx:           ctx,
-		cancel:        cancel,
+		storage:               storage,
+		cfg:                   cfg,
+		sessionByID:           make(map[string]*session.Session),
+		gitInfoCache:          make(map[string]*git.RepoInfo),
+		slotBindings:          make(map[int]string),
+		pinnedRepos:           make(map[string]bool),
+		statusTrigger:         make(chan struct{}, 1),
+		priorityStatusUpdates: make(chan string, 256),
+		ctx:                   ctx,
+		cancel:                cancel,
 	}
 }
 
@@ -171,6 +173,18 @@ func (s *SessionService) Stop() {
 func (s *SessionService) TriggerRefresh() {
 	select {
 	case s.statusTrigger <- struct{}{}:
+	default:
+	}
+}
+
+// EnqueuePriority requests a priority pane scan for a session at the next
+// worker cycle. Bypasses round-robin so hook-driven status changes surface
+// within ~one tick instead of (N/statusRoundRobin)*tick. Drops on backpressure
+// (256-slot buffer; a dropped event just means the round-robin will pick it
+// up shortly).
+func (s *SessionService) EnqueuePriority(id string) {
+	select {
+	case s.priorityStatusUpdates <- id:
 	default:
 	}
 }
@@ -300,6 +314,41 @@ func (s *SessionService) DeleteSession(id string) {
 	}
 	s.mu.Unlock()
 	s.notify(Event{Type: EventSessionsChanged})
+}
+
+// SoftDelete removes a session from in-memory tracking and storage but does
+// NOT kill its tmux pane — caller (today: the TUI's deferDelete) keeps the
+// pane alive during the undo window and is responsible for the eventual
+// kill if undo doesn't fire. Returns the row snapshot so the caller can
+// later pass it back to RestoreDeleted.
+func (s *SessionService) SoftDelete(id string) (*session.SessionRow, error) {
+	s.mu.Lock()
+	sess, ok := s.sessionByID[id]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("session %s not found", id)
+	}
+	row := sess.ToRow()
+	if err := s.storage.DeleteSession(id); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	remaining := make([]*session.Session, 0, len(s.sessions))
+	for _, ss := range s.sessions {
+		if ss.ID != id {
+			remaining = append(remaining, ss)
+		}
+	}
+	s.sessions = remaining
+	s.rebuildSessionMap()
+	for slot, sid := range s.slotBindings {
+		if sid == id {
+			delete(s.slotBindings, slot)
+		}
+	}
+	s.mu.Unlock()
+	s.notify(Event{Type: EventSessionsChanged})
+	return row, nil
 }
 
 // RestartSession respawns the Claude pane (or full restart if dead),
@@ -543,12 +592,15 @@ func (s *SessionService) statusWorkerCycle() {
 		return
 	}
 
+	// Hook sync: merge hook-derived state, persist drift, enqueue any session
+	// whose status changed for the priority pane scan below.
 	if s.hookWatcher != nil {
 		for _, sess := range sessions {
 			hs := s.hookWatcher.GetStatus(sess.ID)
 			if hs == nil {
 				continue
 			}
+			oldStatus := sess.GetStatus()
 			oldClaudeSessionID := sess.ClaudeSessionID
 			oldFirstPrompt := sess.FirstPrompt
 			oldPromptCount := sess.PromptCount
@@ -572,9 +624,72 @@ func (s *SessionService) statusWorkerCycle() {
 			if sess.FirstPrompt != "" && sess.FirstPrompt != oldFirstPrompt {
 				_ = s.storage.UpdateFirstPrompt(sess.ID, sess.FirstPrompt)
 			}
+			if sess.GetStatus() != oldStatus {
+				select {
+				case s.priorityStatusUpdates <- sess.ID:
+				default:
+				}
+			}
 		}
 	}
 
+	// Auto-name: one session per cycle. Mirrors the UI worker that this
+	// service replaces (legacy app.go:2246-2290): Claude's JSONL-derived
+	// session name takes priority, falling back to the prompt heuristic.
+	if s.cfg.IsAutoNameEnabled() {
+		for _, sess := range sessions {
+			if sess.ManuallyRenamed {
+				continue
+			}
+			if sess.ClaudeSessionID != "" && time.Since(sess.ClaudeNameLastChecked) > 30*time.Second {
+				sess.ClaudeNameLastChecked = time.Now()
+				name := session.ReadClaudeSessionName(sess.ClaudeSessionID, sess.ProjectPath)
+				if name != "" && name != sess.ClaudeSessionName {
+					sess.ClaudeSessionName = name
+					sess.Title = name
+					_ = s.storage.UpdateTitle(sess.ID, name)
+					sess.TitleGenerated = true
+					_ = s.storage.MarkTitleGenerated(sess.ID)
+				}
+			}
+			if sess.ClaudeSessionName != "" {
+				continue
+			}
+			if sess.FirstPrompt != "" && !sess.TitleGenerated {
+				title := naming.GenerateTitle(sess.FirstPrompt)
+				if title != "" && title != sess.Title {
+					sess.Title = title
+					_ = s.storage.UpdateTitle(sess.ID, title)
+				}
+				sess.TitleGenerated = true
+				_ = s.storage.MarkTitleGenerated(sess.ID)
+				break // one per cycle
+			}
+		}
+	}
+
+	// Drain priority queue (sessions whose hook status just changed, plus any
+	// external EnqueuePriority callers).
+	priorityIDs := make(map[string]bool)
+drainPriority:
+	for {
+		select {
+		case id := <-s.priorityStatusUpdates:
+			priorityIDs[id] = true
+		default:
+			break drainPriority
+		}
+	}
+	processed := make(map[string]bool, len(priorityIDs))
+	for _, sess := range sessions {
+		if !priorityIDs[sess.ID] {
+			continue
+		}
+		s.updateAndPersistStatus(sess)
+		processed[sess.ID] = true
+	}
+
+	// Round-robin pane scan (skipping already-processed priority sessions).
 	count := statusRoundRobin
 	if count > len(sessions) {
 		count = len(sessions)
@@ -582,12 +697,10 @@ func (s *SessionService) statusWorkerCycle() {
 	for i := 0; i < count; i++ {
 		idx := (s.statusRRIndex + i) % len(sessions)
 		sess := sessions[idx]
-		oldStatus := sess.GetStatus()
-		sess.UpdateStatus()
-		newStatus := sess.GetStatus()
-		if oldStatus != newStatus {
-			_ = s.storage.UpdateStatus(sess.ID, string(newStatus))
+		if processed[sess.ID] {
+			continue
 		}
+		s.updateAndPersistStatus(sess)
 	}
 	s.statusRRIndex = (s.statusRRIndex + count) % len(sessions)
 
@@ -620,6 +733,17 @@ func (s *SessionService) statusWorkerCycle() {
 }
 
 // --- Internal helpers ---
+
+// updateAndPersistStatus runs sess.UpdateStatus() (which scans the tmux pane
+// and merges with hook state), persisting any change to storage.
+func (s *SessionService) updateAndPersistStatus(sess *session.Session) {
+	oldStatus := sess.GetStatus()
+	sess.UpdateStatus()
+	newStatus := sess.GetStatus()
+	if oldStatus != newStatus {
+		_ = s.storage.UpdateStatus(sess.ID, string(newStatus))
+	}
+}
 
 func (s *SessionService) rebuildSessionMap() {
 	s.sessionByID = make(map[string]*session.Session, len(s.sessions))
