@@ -8,6 +8,7 @@ import (
 
 	"github.com/brizzai/fleet/internal/config"
 	"github.com/brizzai/fleet/internal/git"
+	"github.com/brizzai/fleet/internal/service"
 	"github.com/brizzai/fleet/internal/session"
 )
 
@@ -30,8 +31,10 @@ func TestHomeInitializes(t *testing.T) {
 		TickIntervalSec: 2,
 	}
 
+	svc := service.NewSessionService(storage, cfg)
+
 	// Should not panic.
-	home := NewHome(storage, cfg, "test")
+	home := NewHome(svc, storage, cfg, "test")
 	if home == nil {
 		t.Fatal("NewHome returned nil")
 		return
@@ -65,7 +68,9 @@ func TestViewGitInfoCacheRace(t *testing.T) {
 	}
 	defer storage.Close()
 
-	home := NewHome(storage, &config.Config{TickIntervalSec: 2}, "test")
+	cfg := &config.Config{TickIntervalSec: 2}
+	svc := service.NewSessionService(storage, cfg)
+	home := NewHome(svc, storage, cfg, "test")
 	home.width = 120
 	home.height = 40
 

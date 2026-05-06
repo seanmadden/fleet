@@ -109,14 +109,14 @@ func (s *SessionService) notify(evt Event) {
 
 // --- Lifecycle ---
 
-// Start loads sessions, slot bindings, and pinned repos from storage; injects
-// Claude hooks; starts the hook watcher and the background status worker.
-// Returns a non-fatal warning string (e.g. "claude CLI not found") and any
-// fatal error from storage.
-func (s *SessionService) Start() (warning string, err error) {
+// LoadFromStorage hydrates in-memory state (sessions, slot bindings, pinned
+// repos) from SQLite without spawning the worker or injecting hooks. The TUI
+// calls this before its own loadSessions in PR 3b so that UI and service
+// share the same `*session.Session` pointers; PR 3c folds it back into Start.
+func (s *SessionService) LoadFromStorage() error {
 	rows, err := s.storage.LoadSessions()
 	if err != nil {
-		return "", err
+		return err
 	}
 	sessions := make([]*session.Session, 0, len(rows))
 	for _, row := range rows {
@@ -125,16 +125,6 @@ func (s *SessionService) Start() (warning string, err error) {
 
 	bindings, _ := s.storage.LoadSlotBindings()
 	pinned, _ := s.storage.LoadPinnedRepos()
-
-	configDir := hooks.GetClaudeConfigDir()
-	if _, ierr := hooks.InjectClaudeHooks(configDir); ierr != nil {
-		debuglog.Logger.Warn("claude hooks: inject failed", "err", ierr)
-	}
-	s.ghAvailable = github.IsGHAvailable()
-
-	if _, lookErr := exec.LookPath("claude"); lookErr != nil {
-		warning = "claude CLI not found — install Claude Code to create sessions"
-	}
 
 	s.mu.Lock()
 	s.sessions = sessions
@@ -146,6 +136,27 @@ func (s *SessionService) Start() (warning string, err error) {
 		s.pinnedRepos[p] = true
 	}
 	s.mu.Unlock()
+	return nil
+}
+
+// Start loads sessions, slot bindings, and pinned repos from storage; injects
+// Claude hooks; starts the hook watcher and the background status worker.
+// Returns a non-fatal warning string (e.g. "claude CLI not found") and any
+// fatal error from storage.
+func (s *SessionService) Start() (warning string, err error) {
+	if err := s.LoadFromStorage(); err != nil {
+		return "", err
+	}
+
+	configDir := hooks.GetClaudeConfigDir()
+	if _, ierr := hooks.InjectClaudeHooks(configDir); ierr != nil {
+		debuglog.Logger.Warn("claude hooks: inject failed", "err", ierr)
+	}
+	s.ghAvailable = github.IsGHAvailable()
+
+	if _, lookErr := exec.LookPath("claude"); lookErr != nil {
+		warning = "claude CLI not found — install Claude Code to create sessions"
+	}
 
 	if watcher, werr := hooks.NewHookWatcher(); werr == nil {
 		s.hookWatcher = watcher
@@ -261,12 +272,24 @@ func (s *SessionService) CapturePreview(id string) (string, error) {
 
 // CreateSession spawns a new session, persists it, and notifies observers.
 func (s *SessionService) CreateSession(title, projectPath, workspaceName string) (*session.Session, error) {
+	return s.createSessionInternal(title, projectPath, workspaceName, "")
+}
+
+// ForkSession spawns a new session that resumes from `parentClaudeSessionID`
+// via Claude's `--resume … --fork-session` flag (the original conversation
+// remains untouched). All other semantics match CreateSession.
+func (s *SessionService) ForkSession(title, projectPath, workspaceName, parentClaudeSessionID string) (*session.Session, error) {
+	return s.createSessionInternal(title, projectPath, workspaceName, parentClaudeSessionID)
+}
+
+func (s *SessionService) createSessionInternal(title, projectPath, workspaceName, forkFromClaudeSessionID string) (*session.Session, error) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return nil, err
 	}
 
 	sess := session.NewSession(title, projectPath)
 	sess.WorkspaceName = workspaceName
+	sess.ForkFromID = forkFromClaudeSessionID
 
 	if err := sess.Start(); err != nil {
 		return nil, err
@@ -483,7 +506,9 @@ func (s *SessionService) SnapshotForUndo(id string) (*session.SessionRow, error)
 
 // RestoreDeleted re-saves a previously-snapshotted row and re-loads the
 // session into memory. The tmux pane is not respawned — that's the caller's
-// responsibility (UI keeps the pane alive during the undo window).
+// responsibility (UI keeps the pane alive during the undo window). This
+// path creates a fresh `*session.Session` pointer via FromRow; in-process
+// callers that still hold the live pointer should use SoftRestore instead.
 func (s *SessionService) RestoreDeleted(row *session.SessionRow) error {
 	if row == nil {
 		return fmt.Errorf("nil row")
@@ -492,6 +517,26 @@ func (s *SessionService) RestoreDeleted(row *session.SessionRow) error {
 		return err
 	}
 	sess := session.FromRow(row)
+	s.mu.Lock()
+	s.sessions = append(s.sessions, sess)
+	s.rebuildSessionMap()
+	s.mu.Unlock()
+	s.notify(Event{Type: EventSessionsChanged})
+	return nil
+}
+
+// SoftRestore re-inserts a previously soft-deleted session pointer back into
+// the service's tracking and re-saves its row to storage. Unlike
+// RestoreDeleted, this preserves the existing pointer (with its live tmux
+// pane), so the in-process undo-delete path doesn't end up with two diverging
+// `*session.Session` instances.
+func (s *SessionService) SoftRestore(sess *session.Session, row *session.SessionRow) error {
+	if sess == nil || row == nil {
+		return fmt.Errorf("nil session or row")
+	}
+	if err := s.storage.SaveSession(row); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	s.sessions = append(s.sessions, sess)
 	s.rebuildSessionMap()

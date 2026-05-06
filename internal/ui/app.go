@@ -21,6 +21,7 @@ import (
 	"github.com/brizzai/fleet/internal/github"
 	"github.com/brizzai/fleet/internal/hooks"
 	"github.com/brizzai/fleet/internal/naming"
+	"github.com/brizzai/fleet/internal/service"
 	"github.com/brizzai/fleet/internal/session"
 	"github.com/brizzai/fleet/internal/tmux"
 	"github.com/brizzai/fleet/internal/workspace"
@@ -114,6 +115,7 @@ type Home struct {
 
 	sessions    []*session.Session
 	sessionByID map[string]*session.Session
+	svc         *service.SessionService
 	storage     *session.StateDB
 	flatItems   []SidebarItem
 
@@ -196,7 +198,7 @@ type Home struct {
 }
 
 // NewHome creates the main TUI model.
-func NewHome(storage *session.StateDB, cfg *config.Config, version string) *Home {
+func NewHome(svc *service.SessionService, storage *session.StateDB, cfg *config.Config, version string) *Home {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	fi := textinput.New()
@@ -210,6 +212,7 @@ func NewHome(storage *session.StateDB, cfg *config.Config, version string) *Home
 	}
 
 	return &Home{
+		svc:                   svc,
 		storage:               storage,
 		sessionByID:           make(map[string]*session.Session),
 		repoExpanded:          make(map[string]bool),
@@ -318,14 +321,16 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.handleSessionCreate(msg)
 
 	case forkSessionMsg:
-		s := session.NewSession(msg.title, msg.path)
-		s.WorkspaceName = msg.workspaceName
-		s.ForkFromID = msg.parentClaudeSessionID
+		title := msg.title
+		path := msg.path
+		ws := msg.workspaceName
+		parent := msg.parentClaudeSessionID
 		return h, func() tea.Msg {
-			if err := s.Start(); err != nil {
+			sess, err := h.svc.ForkSession(title, path, ws, parent)
+			if err != nil {
 				return sessionCreateResultMsg{err: err}
 			}
-			return sessionCreateResultMsg{session: s}
+			return sessionCreateResultMsg{session: sess}
 		}
 
 	case sessionCreateResultMsg:
@@ -352,15 +357,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			h.setError(fmt.Errorf("restart failed: %w", msg.err))
 		}
-		// Update storage with new status and tmux session name.
-		if s, ok := h.sessionByID[msg.id]; ok {
-			if err := h.storage.UpdateStatus(s.ID, string(s.GetStatus())); err != nil {
-				debuglog.Logger.Error("storage: UpdateStatus after restart", "id", s.ID, "err", err)
-			}
-			if err := h.storage.UpdateTmuxSession(s.ID, s.TmuxSessionName); err != nil {
-				debuglog.Logger.Error("storage: UpdateTmuxSession after restart", "id", s.ID, "err", err)
-			}
-		}
+		// svc.RestartSession already persisted status + tmux name.
 		h.rebuildFlatItems()
 
 	case commandPaletteMsg:
@@ -391,16 +388,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h, nil
 
 	case sessionRenameMsg:
-		if s, ok := h.sessionByID[msg.id]; ok {
-			s.Title = msg.newTitle
-			s.ManuallyRenamed = true
+		if _, ok := h.sessionByID[msg.id]; ok {
 			analytics.Track(analytics.EventSessionRenamed, nil)
-			if err := h.storage.UpdateTitle(s.ID, msg.newTitle); err != nil {
-				debuglog.Logger.Error("storage: UpdateTitle (rename)", "id", s.ID, "err", err)
-			}
-			if err := h.storage.MarkManuallyRenamed(s.ID); err != nil {
-				debuglog.Logger.Error("storage: MarkManuallyRenamed", "id", s.ID, "err", err)
-			}
+			h.svc.RenameSession(msg.id, msg.newTitle)
 			h.rebuildFlatItems()
 		}
 		return h, nil
@@ -653,11 +643,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		// Load pinned repos from storage.
-		if pinnedPaths, err := h.storage.LoadPinnedRepos(); err == nil {
-			for _, p := range pinnedPaths {
-				h.pinnedRepos[p] = true
-			}
+		// Load pinned repos from svc (already populated via LoadFromStorage).
+		for _, p := range h.svc.PinnedRepos() {
+			h.pinnedRepos[p] = true
 		}
 		// Default all repos to expanded on first load.
 		groups := session.GroupByRepo(h.sessions)
@@ -1089,7 +1077,7 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			if h.countSessionsForRepo(item.RepoPath) == 0 && h.pinnedRepos[item.RepoPath] {
 				delete(h.pinnedRepos, item.RepoPath)
-				if err := h.storage.UnpinRepo(item.RepoPath); err != nil {
+				if err := h.svc.UnpinRepo(item.RepoPath); err != nil {
 					debuglog.Logger.Error("failed to unpin repo", "repo", item.RepoPath, "err", err)
 				}
 				h.actionLog.Add("unpin repo", filepath.Base(item.RepoPath), true)
@@ -1265,11 +1253,7 @@ func (h *Home) attachSelected() tea.Cmd {
 		return nil
 	}
 
-	h.markSessionAccessed(s)
-	s.Acknowledge()
-	if err := h.storage.SetAcknowledged(s.ID, true); err != nil {
-		debuglog.Logger.Error("storage: SetAcknowledged", "id", s.ID, "err", err)
-	}
+	h.svc.AcknowledgeSession(s.ID)
 
 	h.isAttaching.Store(true)
 
@@ -1294,19 +1278,14 @@ func (a attachCmd) SetStdout(w io.Writer) {}
 func (a attachCmd) SetStderr(w io.Writer) {}
 
 func (h *Home) handleSessionCreate(msg sessionCreateMsg) (tea.Model, tea.Cmd) {
-	if _, err := exec.LookPath("claude"); err != nil {
-		h.setError(fmt.Errorf("claude CLI not found — install Claude Code to create sessions"))
-		return h, nil
-	}
 	debuglog.Logger.Info("creating session", "title", msg.title, "path", msg.path)
-	s := session.NewSession(msg.title, msg.path)
-	s.WorkspaceName = msg.workspaceName
 	return h, func() tea.Msg {
-		if err := s.Start(); err != nil {
-			debuglog.Logger.Error("session Start() failed", "title", msg.title, "path", msg.path, "err", err)
+		sess, err := h.svc.CreateSession(msg.title, msg.path, msg.workspaceName)
+		if err != nil {
+			debuglog.Logger.Error("svc.CreateSession failed", "title", msg.title, "path", msg.path, "err", err)
 			return sessionCreateResultMsg{err: err}
 		}
-		return sessionCreateResultMsg{session: s}
+		return sessionCreateResultMsg{session: sess}
 	}
 }
 
@@ -1325,20 +1304,16 @@ func (h *Home) handleSessionCreateResult(msg sessionCreateResultMsg) (tea.Model,
 	h.workerMu.Unlock()
 
 	// Ensure the repo group is expanded for the new session and pin it.
+	// svc.CreateSession already persisted the session row.
 	repo := session.GetRepoRoot(s.ProjectPath)
 	h.repoExpanded[repo] = true
 	if !h.pinnedRepos[repo] {
 		h.pinnedRepos[repo] = true
-		if err := h.storage.PinRepo(repo); err != nil {
+		if err := h.svc.PinRepo(repo); err != nil {
 			debuglog.Logger.Error("failed to pin repo", "repo", repo, "err", err)
 		}
 	}
 	h.rebuildFlatItems()
-
-	// Save to storage.
-	if err := h.storage.SaveSession(s.ToRow()); err != nil {
-		h.setError(fmt.Errorf("failed to save session: %w", err))
-	}
 
 	// Auto-select the new session.
 	for i, item := range h.flatItems {
@@ -1419,19 +1394,9 @@ func (h *Home) restartSelected() tea.Cmd {
 	title := s.Title
 	debuglog.Logger.Info("restarting session", "id", id, "title", title)
 	return func() tea.Msg {
-		var err error
-		if s.IsAlive() && !s.GetTmuxSession().IsPaneDead() {
-			// Tmux session alive, just respawn the pane.
-			err = s.RespawnClaude()
-			if err != nil {
-				debuglog.Logger.Error("RespawnClaude failed", "id", id, "err", err)
-			}
-		} else {
-			// Tmux session dead or pane dead — full restart.
-			err = s.Restart()
-			if err != nil {
-				debuglog.Logger.Error("Restart failed", "id", id, "err", err)
-			}
+		err := h.svc.RestartSession(id)
+		if err != nil {
+			debuglog.Logger.Error("svc.RestartSession failed", "id", id, "err", err)
 		}
 		return sessionRestartMsg{id: id, err: err}
 	}
@@ -1835,19 +1800,21 @@ func (h *Home) deferDelete(msg sessionDeleteMsg) (tea.Model, tea.Cmd) {
 
 	debuglog.Logger.Info("deferred delete", "id", msg.id, "title", s.Title)
 
-	// Snapshot DB row before deleting.
-	row := s.ToRow()
 	repoPath := session.GetRepoRoot(s.ProjectPath)
 
-	// Delete from SQLite immediately (crash-safe).
-	if err := h.storage.DeleteSession(msg.id); err != nil {
-		debuglog.Logger.Error("failed to delete session from storage", "id", msg.id, "err", err)
+	// Soft-delete via service: removes from in-memory + storage, prunes any
+	// slot binding, but leaves the tmux pane alive for the undo window. The
+	// returned row is the snapshot we'll re-save on undo.
+	row, err := h.svc.SoftDelete(msg.id)
+	if err != nil {
+		debuglog.Logger.Error("svc.SoftDelete failed", "id", msg.id, "err", err)
+		return h, nil
 	}
 
 	// Handle repo unpin if requested.
 	if msg.unpinRepo {
 		delete(h.pinnedRepos, msg.repoPath)
-		if err := h.storage.UnpinRepo(msg.repoPath); err != nil {
+		if err := h.svc.UnpinRepo(msg.repoPath); err != nil {
 			debuglog.Logger.Error("failed to unpin repo", "repo", msg.repoPath, "err", err)
 		}
 	}
@@ -1926,8 +1893,10 @@ func (h *Home) undoDelete() (tea.Model, tea.Cmd) {
 
 	debuglog.Logger.Info("undo delete", "id", pd.Session.ID, "title", pd.Session.Title)
 
-	// Re-insert into SQLite.
-	if err := h.storage.SaveSession(pd.Row); err != nil {
+	// Re-insert via service: re-saves row + re-attaches the LIVE pointer
+	// (tmux is still alive in the undo window) to the service's tracking,
+	// avoiding a fresh FromRow copy that would diverge from the live one.
+	if err := h.svc.SoftRestore(pd.Session, pd.Row); err != nil {
 		h.setError(fmt.Errorf("undo failed: %w", err))
 		return h, nil
 	}
@@ -1935,12 +1904,12 @@ func (h *Home) undoDelete() (tea.Model, tea.Cmd) {
 	// Re-pin repo if it was unpinned.
 	if pd.UnpinRepo {
 		h.pinnedRepos[pd.RepoPath] = true
-		if err := h.storage.PinRepo(pd.RepoPath); err != nil {
+		if err := h.svc.PinRepo(pd.RepoPath); err != nil {
 			debuglog.Logger.Error("failed to re-pin repo on undo", "repo", pd.RepoPath, "err", err)
 		}
 	}
 
-	// Re-add to session list (tmux is still alive).
+	// Re-add to UI's session list mirror.
 	h.workerMu.Lock()
 	h.sessions = append(h.sessions, pd.Session)
 	h.rebuildSessionMap()
@@ -2527,7 +2496,7 @@ func (h *Home) bindCurrentSessionToSlot(slot int) {
 		h.unbindSlot(slot)
 		return
 	}
-	if err := h.storage.BindSlot(slot, s.ID); err != nil {
+	if err := h.svc.BindSlot(slot, s.ID); err != nil {
 		h.setError(fmt.Errorf("bind slot: %w", err))
 		return
 	}
@@ -2553,7 +2522,7 @@ func (h *Home) unbindSlot(slot int) {
 	if s, ok := h.sessionByID[id]; ok {
 		title = s.Title
 	}
-	if err := h.storage.UnbindSlot(slot); err != nil {
+	if err := h.svc.UnbindSlot(slot); err != nil {
 		h.setError(fmt.Errorf("unbind slot: %w", err))
 		return
 	}
@@ -2577,7 +2546,7 @@ func (h *Home) jumpToSlot(slot int) (tea.Model, tea.Cmd) {
 	s, ok := h.sessionByID[sessID]
 	if !ok {
 		delete(h.slotBindings, slot)
-		_ = h.storage.UnbindSlot(slot)
+		_ = h.svc.UnbindSlot(slot)
 		h.setError(fmt.Errorf("slot %d was stale, cleared", slot))
 		return h, nil
 	}
@@ -2695,16 +2664,12 @@ func (h *Home) syncViewport() {
 }
 
 func (h *Home) loadSessions() tea.Msg {
-	rows, err := h.storage.LoadSessions()
-	if err != nil {
-		debuglog.Logger.Error("failed to load sessions from database", "err", err)
-		return loadSessionsMsg{err: err}
-	}
-
-	sessions := make([]*session.Session, 0, len(rows))
-	for _, row := range rows {
-		sessions = append(sessions, session.FromRow(row))
-	}
+	// SessionService.LoadFromStorage was called from main.go before NewHome,
+	// so svc already holds the canonical sessions/slotBindings/pinnedRepos.
+	// Pulling from svc means UI and svc share the same `*session.Session`
+	// pointers — mutations through svc are visible to the UI worker and vice
+	// versa until PR 3c moves the worker into the service.
+	sessions := h.svc.Sessions()
 
 	// Demo mode: only show sessions under the specified path prefix.
 	if prefix := os.Getenv("FLEET_DEMO_PREFIX"); prefix != "" {
@@ -2717,11 +2682,7 @@ func (h *Home) loadSessions() tea.Msg {
 		sessions = filtered
 	}
 
-	slotBindings, err := h.storage.LoadSlotBindings()
-	if err != nil {
-		debuglog.Logger.Error("failed to load slot bindings", "err", err)
-		slotBindings = map[int]string{}
-	}
+	slotBindings := h.svc.SlotBindings()
 
 	// These block but run in the tea.Cmd goroutine, not Update().
 	configDir := hooks.GetClaudeConfigDir()

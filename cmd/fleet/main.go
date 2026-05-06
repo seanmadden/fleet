@@ -11,6 +11,7 @@ import (
 	"github.com/brizzai/fleet/internal/config"
 	"github.com/brizzai/fleet/internal/debuglog"
 	"github.com/brizzai/fleet/internal/migration"
+	"github.com/brizzai/fleet/internal/service"
 	"github.com/brizzai/fleet/internal/session"
 	"github.com/brizzai/fleet/internal/tmux"
 	"github.com/brizzai/fleet/internal/ui"
@@ -116,7 +117,16 @@ func runTUI() {
 	}
 	defer storage.Close()
 
-	model := ui.NewHome(storage, cfg, version)
+	svc := service.NewSessionService(storage, cfg)
+	if err := svc.LoadFromStorage(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load sessions: %v\n", err)
+		os.Exit(1)
+	}
+	// NOTE: svc.Start() intentionally NOT called yet — Stage 0 PR 3b keeps
+	// the UI worker authoritative while mutations route through the service.
+	// PR 3c spawns the service worker and deletes the UI worker.
+
+	model := ui.NewHome(svc, storage, cfg, version)
 	p := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),

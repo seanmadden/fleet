@@ -11,6 +11,7 @@ import (
 // the in-process implementation exists.
 type Service interface {
 	// Lifecycle.
+	LoadFromStorage() error
 	Start() (warning string, err error)
 	Stop()
 	Subscribe(Observer)
@@ -30,6 +31,7 @@ type Service interface {
 
 	// Mutations.
 	CreateSession(title, projectPath, workspaceName string) (*session.Session, error)
+	ForkSession(title, projectPath, workspaceName, parentClaudeSessionID string) (*session.Session, error)
 	DeleteSession(id string)
 	RestartSession(id string) error
 	RenameSession(id, newTitle string)
@@ -43,6 +45,7 @@ type Service interface {
 	SnapshotForUndo(id string) (*session.SessionRow, error)
 	SoftDelete(id string) (*session.SessionRow, error)
 	RestoreDeleted(row *session.SessionRow) error
+	SoftRestore(sess *session.Session, row *session.SessionRow) error
 
 	// Auto-naming hooks.
 	OnFirstPrompt(id, prompt string)
