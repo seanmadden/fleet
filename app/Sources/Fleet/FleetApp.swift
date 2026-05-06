@@ -26,6 +26,7 @@ struct FleetApp: App {
 // Mac app. When we ship a real `.app` bundle this can come out.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        FontRegistration.register()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }

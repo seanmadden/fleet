@@ -14,20 +14,72 @@ import SwiftUI
 struct TerminalPaneView: NSViewRepresentable {
     let session: Session?
 
+    // SwiftTerm has no built-in concept of internal padding, so we wrap it
+    // in an NSView that insets the terminal by `padding` on every edge.
+    // Anything else (caret color, font) is set on the inner view directly.
+    private static let padding: CGFloat = 10
+    private static let cornerRadius: CGFloat = 4
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let view = LocalProcessTerminalView(frame: .zero)
-        view.font = NSFont.userFixedPitchFont(ofSize: 13) ?? NSFont.systemFont(ofSize: 13)
-        view.allowMouseReporting = true
-        view.optionAsMetaKey = true
-        context.coordinator.terminal = view
-        scheduleAttach(view: view, coordinator: context.coordinator)
-        return view
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView(frame: .zero)
+        container.wantsLayer = true
+        // Match the terminal's native background so the padding doesn't
+        // show as a visible seam if the terminal redraws lazily.
+        container.layer?.backgroundColor = TokyoNight.background.cgColor
+
+        let term = LocalProcessTerminalView(frame: .zero)
+        term.translatesAutoresizingMaskIntoConstraints = false
+        term.font = Self.preferredFont()
+        term.allowMouseReporting = true
+        term.optionAsMetaKey = true
+
+        // Placeholder palette — Tokyo Night. Real visual system comes from
+        // the UX designer; this just stops us from looking like a 1990s xterm.
+        term.installColors(TokyoNight.ansi())
+        term.nativeBackgroundColor = TokyoNight.background
+        term.nativeForegroundColor = TokyoNight.foreground
+        term.caretColor = TokyoNight.cursor
+        term.selectedTextBackgroundColor = TokyoNight.selectionBackground
+
+        container.addSubview(term)
+        NSLayoutConstraint.activate([
+            term.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: Self.padding),
+            term.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -Self.padding),
+            term.topAnchor.constraint(equalTo: container.topAnchor, constant: Self.padding),
+            term.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -Self.padding),
+        ])
+
+        context.coordinator.terminal = term
+        scheduleAttach(view: term, coordinator: context.coordinator)
+        return container
     }
 
-    func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {
-        scheduleAttach(view: nsView, coordinator: context.coordinator)
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let term = context.coordinator.terminal else { return }
+        scheduleAttach(view: term, coordinator: context.coordinator)
+    }
+
+    private static let fontSize: CGFloat = 13.5
+
+    private static func preferredFont() -> NSFont {
+        // The bundled font registers under the family "JetBrains Mono"
+        // (with space) but its PostScript name is "JetBrainsMono-Regular"
+        // (no space). NSFont(name:) takes the PostScript name; if that
+        // miss-resolves we fall back to the family lookup via NSFontManager.
+        if let f = NSFont(name: "JetBrainsMono-Regular", size: fontSize) {
+            return f
+        }
+        if let f = NSFontManager.shared.font(
+            withFamily: "JetBrains Mono",
+            traits: [],
+            weight: 5,
+            size: fontSize
+        ) {
+            return f
+        }
+        return NSFont.userFixedPitchFont(ofSize: fontSize) ?? NSFont.systemFont(ofSize: fontSize)
     }
 
     /// Schedules `startProcess` on the next runloop turn. SwiftUI lays out
