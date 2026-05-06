@@ -131,11 +131,18 @@ Estimated diff: +700 lines.
 
 ### PR 5 — TUI becomes a daemon client (with auto-spawn)
 
-> **Status (2026-05-06)**: ✅ landed on `fleet-ui`. New `internal/daemonclient` package implements `service.Service` over the daemon socket (cache populated by `ListSessions` / `ListRepos` streams + reconnect with exp-backoff; mutations as unary RPCs with optimistic local cache application). `cmd/fleet/main.go` defaults the TUI to daemon mode (autospawn via `daemonclient.EnsureRunning` → `fleet daemon --detach` with `Setsid`); `--standalone` keeps the in-process path. `cmd/fleet/daemon.go` learned `--detach` (Setsid re-exec, stdout/stderr → `~/.config/fleet/daemon.log`). `internal/ui/app.go`'s `NewHome` widened to accept `service.Service`.
+> **Status (2026-05-06)**: ✅ landed on `fleet-ui` (`52afd96` + smoke-test follow-ups `13208ef`). New `internal/daemonclient` package implements `service.Service` over the daemon socket (cache populated by `ListSessions` / `ListRepos` streams + reconnect with exp-backoff 250ms→5s cap; mutations as unary RPCs with optimistic local cache application). `cmd/fleet/main.go` defaults the TUI to daemon mode (autospawn via `daemonclient.EnsureRunning` → `fleet daemon --detach` with `Setsid`); `--standalone` keeps the in-process path. `cmd/fleet/daemon.go` learned `--detach` (Setsid re-exec, stdout/stderr → `~/.config/fleet/daemon.log`). `internal/ui/app.go`'s `NewHome` widened to accept `service.Service`.
 >
 > **Daemon-side fill-ins shipped alongside (so daemon-mode TUI has zero feature regression)**: `SendKeys`, `CapturePane`, plus two new RPCs `SoftDeleteSession` + `RestoreSession` (proto + server) backed by an in-memory tombstone buffer with 30s eviction. Workspace*, Config*, StreamHookEvents stay `Unimplemented` until the Mac app needs them.
 >
 > **Tmux topology shortcut**: daemon and TUI both attach to the host's default tmux server, so daemonclient sessions get a working `*tmux.Session` via `session.FromRow`'s `tmux.ReconnectSession`. This means quick-approve/pane-capture/PTY-attach all run against local tmux on the hot path — the SendKeys/CapturePane RPCs exist for hypothetical remote clients but the local TUI bypasses them. Matches the architecture doc's "PTY data does NOT travel through the daemon" principle.
+>
+> **Smoke-test follow-ups (`13208ef`)** — three bugs caught only by running `./build/fleet` against a real daemon, none by `go test`:
+> 1. `daemonclient.SoftRestore` was a no-op; the TUI's `undoDelete` calls `SoftRestore` (not `RestoreDeleted`), so daemon mode silently broke `z` — the daemon's tombstone evicted after 30s and killed the tmux pane. Both `SoftRestore` and `RestoreDeleted` now share a `restore` body that calls `api.RestoreSession`.
+> 2. `grpcServer.GracefulStop()` on SIGTERM hangs forever because `ListSessions`/`ListRepos` are persistent server-streaming RPCs (never finish "in-flight"). Now GracefulStop with a 2s deadline, then hard `Stop()`. Without this, pkill'd daemons turned into zombies.
+> 3. `fleet --standalone` was being routed through the subcommand switch and rejected as "unknown command". Flag-prefixed args now route to `runTUI` before the dispatch.
+>
+> **Manual smoke checklist (all green 2026-05-06)**: cold start (autospawn), warm start (reuse), rename round-trip, undo-delete round-trip (tmux survives past 30s), disconnect/reconnect (no zombie; reconnect logs + EventError fire correctly), `--standalone` fallback.
 
 **Goal**: switch the TUI's default mode from in-process to daemon-client. Keep `--standalone` as the escape hatch.
 
