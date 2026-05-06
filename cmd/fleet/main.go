@@ -118,15 +118,17 @@ func runTUI() {
 	defer storage.Close()
 
 	svc := service.NewSessionService(storage, cfg)
-	if err := svc.LoadFromStorage(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load sessions: %v\n", err)
+	warning, err := svc.Start()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start session service: %v\n", err)
 		os.Exit(1)
 	}
-	// NOTE: svc.Start() intentionally NOT called yet — Stage 0 PR 3b keeps
-	// the UI worker authoritative while mutations route through the service.
-	// PR 3c spawns the service worker and deletes the UI worker.
+	defer svc.Stop()
 
 	model := ui.NewHome(svc, storage, cfg, version)
+	if warning != "" {
+		model.SetStartupWarning(warning)
+	}
 	p := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),

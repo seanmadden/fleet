@@ -20,7 +20,6 @@ import (
 	"github.com/brizzai/fleet/internal/git"
 	"github.com/brizzai/fleet/internal/github"
 	"github.com/brizzai/fleet/internal/hooks"
-	"github.com/brizzai/fleet/internal/naming"
 	"github.com/brizzai/fleet/internal/service"
 	"github.com/brizzai/fleet/internal/session"
 	"github.com/brizzai/fleet/internal/tmux"
@@ -32,13 +31,10 @@ import (
 )
 
 const (
-	tickInterval           = 2 * time.Second
 	previewTickInterval    = 500 * time.Millisecond
-	previewCacheTTL        = 500 * time.Millisecond
 	layoutBreakpointSingle = 50
 	layoutBreakpointDual   = 80
 	helpBarHeight          = 2 // border line + shortcuts
-	statusRoundRobin       = 5 // sessions per tick
 	undoDeleteTimeout      = 5 * time.Second
 )
 
@@ -56,8 +52,6 @@ type PendingDelete struct {
 
 // Message types.
 type (
-	tickMsg          time.Time
-	hookChangedMsg   struct{} // HookWatcher detected a status file change
 	statusUpdateMsg  struct{ attachedSessionID string }
 	sessionDeleteMsg struct {
 		id               string
@@ -145,13 +139,9 @@ type Home struct {
 	repoExpanded     map[string]bool // repo path -> expanded state
 	previewCache     map[string]string
 	previewCacheTime map[string]time.Time
-	statusRRIndex    int // round-robin index for status updates
 
-	gitInfoCache map[string]*git.RepoInfo // repo root path -> git info
-	gitRRIndex   int                      // round-robin index for git refresh
+	gitInfoCache map[string]*git.RepoInfo // repo root path -> git info (mirror of svc.GitInfoAll)
 	ghAvailable  bool                     // cached gh CLI availability
-
-	hookWatcher *hooks.HookWatcher
 
 	// Focus mode (split view).
 	focusMode     bool
@@ -183,13 +173,14 @@ type Home struct {
 	actionLog    *ActionLog
 	bugReport    *BugReportDialog
 
-	// Background worker for async status/git/PR updates.
-	statusTrigger         chan struct{} // buffered(1), triggers worker
-	priorityStatusUpdates chan string   // buffered, session IDs with fresh hook changes — drained before round-robin
-	workerMu              sync.Mutex    // protects sessions/gitInfoCache from concurrent worker access
-	ctx                   context.Context
-	cancel                context.CancelFunc
-	workerStarted         bool
+	// Subscription bridge: SessionService observer fan-out lands in this
+	// buffered channel, drained by listenForServiceEvents → serviceEventMsg
+	// → Update so all state mutation stays in the bubbletea goroutine.
+	eventCh    chan service.Event
+	subscribed bool
+
+	// Startup warning surfaced from svc.Start() (e.g. "claude CLI not found").
+	startupWarning string
 
 	startTime time.Time // app start time for uptime tracking
 
@@ -199,8 +190,6 @@ type Home struct {
 
 // NewHome creates the main TUI model.
 func NewHome(svc *service.SessionService, storage *session.StateDB, cfg *config.Config, version string) *Home {
-	ctx, cancel := context.WithCancel(context.Background())
-
 	fi := textinput.New()
 	fi.Placeholder = "filter..."
 	fi.CharLimit = 64
@@ -238,19 +227,43 @@ func NewHome(svc *service.SessionService, storage *session.StateDB, cfg *config.
 		version:               version,
 		errorHistory:          NewErrorHistory(50),
 		actionLog:             NewActionLog(100),
-		statusTrigger:         make(chan struct{}, 1),
-		priorityStatusUpdates: make(chan string, 256),
-		ctx:                   ctx,
-		cancel:                cancel,
+		eventCh:               make(chan service.Event, 256),
 		startTime:             time.Now(),
 	}
 }
+
+// SetStartupWarning records a non-fatal warning to surface in the toast/info
+// row on first render. Called from main.go when svc.Start() reports one.
+func (h *Home) SetStartupWarning(msg string) { h.startupWarning = msg }
+
+// OnEvent satisfies service.Observer. Called from svc's worker goroutine —
+// must not block, must not touch UI state directly. Pushes onto eventCh so
+// listenForServiceEvents → Update handles it on the bubbletea goroutine.
+func (h *Home) OnEvent(e service.Event) {
+	select {
+	case h.eventCh <- e:
+	default:
+		// Backpressure: drop the event. The next round-robin tick from svc
+		// will re-emit EventSessionStatusChanged and re-sync state.
+	}
+}
+
+// listenForServiceEvents blocks one event from eventCh and returns it as a
+// tea.Msg. Re-armed after each delivery so the channel is continuously drained.
+func (h *Home) listenForServiceEvents() tea.Msg {
+	e, ok := <-h.eventCh
+	if !ok {
+		return nil
+	}
+	return serviceEventMsg{event: e}
+}
+
+type serviceEventMsg struct{ event service.Event }
 
 // Init implements tea.Model.
 func (h *Home) Init() tea.Cmd {
 	return tea.Batch(
 		h.loadSessions,
-		h.tick(),
 		h.previewTick(),
 	)
 }
@@ -287,34 +300,18 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return h.handleKey(msg)
 
-	case tickMsg:
-		return h.handleTick()
-
-	case hookChangedMsg:
-		// HookWatcher detected a status file change. Do immediate hook-only sync,
-		// then hand sessions whose hook changed to the worker via the priority queue
-		// so they get a full UpdateStatus() within ~100ms instead of waiting for round-robin.
-		h.workerMu.Lock()
-		changed := h.syncHookStatuses(h.sessions)
-		h.rebuildFlatItems()
-		h.workerMu.Unlock()
-		h.enqueuePriorityUpdates(changed)
-		return h, h.listenForHookChanges
+	case serviceEventMsg:
+		return h.handleServiceEvent(msg)
 
 	case statusUpdateMsg:
-		// Returned after detaching from session.
+		// Returned after detaching from session. Bump priority for the just-
+		// attached session so its pane gets re-scanned within ~one cycle, and
+		// kick the worker so we don't wait for the next ticker tick.
 		h.isAttaching.Store(false)
-		// Immediate hook sync (data already in HookWatcher from hooks that fired during attach).
-		h.workerMu.Lock()
-		changed := h.syncHookStatuses(h.sessions)
-		h.rebuildFlatItems()
-		h.workerMu.Unlock()
-		h.enqueuePriorityUpdates(changed)
-		// Also trigger full background refresh for pane captures, git, etc.
-		select {
-		case h.statusTrigger <- struct{}{}:
-		default:
+		if msg.attachedSessionID != "" {
+			h.svc.EnqueuePriority(msg.attachedSessionID)
 		}
+		h.svc.TriggerRefresh()
 		return h, nil
 
 	case sessionCreateMsg:
@@ -365,20 +362,10 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return h.dispatchCommand(msg.commandID)
 
 	case reloadAllResultMsg:
-		for _, s := range h.sessions {
-			if err := h.storage.UpdateStatus(s.ID, string(s.GetStatus())); err != nil {
-				debuglog.Logger.Error("storage: UpdateStatus after reload all", "id", s.ID, "err", err)
-			}
-			if err := h.storage.UpdateTmuxSession(s.ID, s.TmuxSessionName); err != nil {
-				debuglog.Logger.Error("storage: UpdateTmuxSession after reload all", "id", s.ID, "err", err)
-			}
-		}
+		// svc.RestartSession persisted each session's status + tmux name as
+		// it ran; just refresh UI and kick the worker to re-scan panes.
 		h.rebuildFlatItems()
-		// Trigger immediate status refresh.
-		select {
-		case h.statusTrigger <- struct{}{}:
-		default:
-		}
+		h.svc.TriggerRefresh()
 		if len(msg.errors) > 0 {
 			h.setError(fmt.Errorf("reloaded %d sessions, %d failed: %s",
 				msg.restarted, len(msg.errors), strings.Join(msg.errors, ", ")))
@@ -439,16 +426,12 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.setError(fmt.Errorf("checkout: %w", msg.err))
 			return h, nil
 		}
-		// Refresh git info for the repo.
-		h.workerMu.Lock()
+		// Refresh git info for the repo immediately so the sidebar reflects
+		// the new branch on the next render; the service worker will pick up
+		// PR/CI state on its next cycle (we kick it to make that fast).
 		h.gitInfoCache[msg.repoPath] = git.RefreshGitInfo(msg.repoPath)
-		h.workerMu.Unlock()
 		h.rebuildFlatItems()
-		// Trigger PR refresh for new branch.
-		select {
-		case h.statusTrigger <- struct{}{}:
-		default:
-		}
+		h.svc.TriggerRefresh()
 		return h, nil
 
 	case statusSnapshotMsg:
@@ -628,6 +611,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.warning != "" {
 			h.setError(fmt.Errorf("%s", msg.warning))
 		}
+		// h.sessions and svc.Sessions() share the same underlying pointers
+		// because main.go's svc.Start() already loaded from storage and
+		// loadSessions() read from svc.Sessions().
 		h.sessions = msg.sessions
 		h.rebuildSessionMap()
 		// Keep only bindings whose session is present in the loaded view. Do
@@ -666,18 +652,16 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			h.cursor = FirstSelectableItem(h.flatItems)
 		}
 
-		// Start hook watcher.
-		if h.hookWatcher == nil {
-			if watcher, err := hooks.NewHookWatcher(); err == nil {
-				h.hookWatcher = watcher
-				go watcher.Start()
+		// Subscribe to the service once and start draining the event channel.
+		// svc.Start() (called from main.go) already spawned the worker and
+		// hook watcher, so we just need to listen.
+		if !h.subscribed {
+			h.subscribed = true
+			h.svc.Subscribe(h)
+			if h.startupWarning != "" {
+				h.setError(fmt.Errorf("%s", h.startupWarning))
+				h.startupWarning = ""
 			}
-		}
-
-		// Start background status worker (once).
-		if !h.workerStarted {
-			h.workerStarted = true
-			go h.statusWorker()
 
 			// Initialize analytics (once, after first load).
 			analytics.Init(h.cfg.IsTelemetryEnabled())
@@ -695,15 +679,54 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.cfg.IsCopyClaudeSettingsEnabled(),
 			)
 		}
-
-		// Start listening for hook changes.
-		if h.hookWatcher != nil {
-			return h, h.listenForHookChanges
-		}
-		return h, nil
+		// Kick off the listener loop and immediately request a refresh so
+		// the first cycle's git/PR data lands quickly.
+		h.svc.TriggerRefresh()
+		return h, h.listenForServiceEvents
 	}
 
 	return h, nil
+}
+
+// handleServiceEvent re-syncs UI state from the service after the worker
+// fired an event. EventSessionStatusChanged is the high-frequency one
+// (per-cycle), so keep it cheap: refresh git cache and rebuild flat items.
+// EventSessionsChanged forces a session-list re-pull.
+func (h *Home) handleServiceEvent(msg serviceEventMsg) (tea.Model, tea.Cmd) {
+	switch msg.event.Type {
+	case service.EventSessionsChanged:
+		// Session set changed (create/delete/restore) or slot/pin mutation.
+		// svc holds the canonical pointers; pull them and refresh mirrors.
+		h.sessions = h.svc.Sessions()
+		h.rebuildSessionMap()
+		h.slotBindings = h.svc.SlotBindings()
+		h.pinnedRepos = make(map[string]bool, 0)
+		for _, p := range h.svc.PinnedRepos() {
+			h.pinnedRepos[p] = true
+		}
+		// Auto-expand any new repo groups.
+		groups := session.GroupByRepo(h.sessions)
+		for repo := range groups {
+			if _, exists := h.repoExpanded[repo]; !exists {
+				h.repoExpanded[repo] = true
+			}
+		}
+		for repo := range h.pinnedRepos {
+			if _, exists := h.repoExpanded[repo]; !exists {
+				h.repoExpanded[repo] = true
+			}
+		}
+		h.gitInfoCache = h.svc.GitInfoAll()
+		h.rebuildFlatItems()
+	case service.EventSessionStatusChanged, service.EventGitInfoChanged:
+		h.gitInfoCache = h.svc.GitInfoAll()
+		h.rebuildFlatItems()
+	case service.EventError:
+		if msg.event.Message != "" {
+			h.setError(fmt.Errorf("%s", msg.event.Message))
+		}
+	}
+	return h, h.listenForServiceEvents
 }
 
 // View implements tea.Model.
@@ -759,14 +782,10 @@ func (h *Home) renderBody() string {
 
 	var b strings.Builder
 
-	// Snapshot gitInfoCache under lock — the worker goroutine writes to
-	// it concurrently, and View() must not read the live map without a lock.
-	h.workerMu.Lock()
-	gitInfoSnap := make(map[string]*git.RepoInfo, len(h.gitInfoCache))
-	for k, v := range h.gitInfoCache {
-		gitInfoSnap[k] = v
-	}
-	h.workerMu.Unlock()
+	// gitInfoCache is now mutated only on the bubbletea goroutine (via
+	// service event drains and the branch-checkout handler), so a snapshot
+	// is no longer required for View() correctness; alias the live map.
+	gitInfoSnap := h.gitInfoCache
 
 	// Header.
 	header := h.renderHeader()
@@ -1216,10 +1235,8 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.helpOverlay.Show()
 		return h, nil
 	case "q", "ctrl+c":
-		h.cancel() // stops background worker
-		if h.hookWatcher != nil {
-			h.hookWatcher.Stop()
-		}
+		// SessionService.Stop() is wired via defer in cmd/fleet/main.go and
+		// owns the worker + hook watcher lifecycle now.
 		if h.controlClient != nil {
 			h.controlClient.Close()
 		}
@@ -1298,10 +1315,8 @@ func (h *Home) handleSessionCreateResult(msg sessionCreateResultMsg) (tea.Model,
 	analytics.Track(analytics.EventSessionCreated, nil)
 
 	s := msg.session
-	h.workerMu.Lock()
 	h.sessions = append(h.sessions, s)
 	h.rebuildSessionMap()
-	h.workerMu.Unlock()
 
 	// Ensure the repo group is expanded for the new session and pin it.
 	// svc.CreateSession already persisted the session row.
@@ -1755,9 +1770,7 @@ func (h *Home) openPRInBrowser() tea.Cmd {
 		return nil
 	}
 
-	h.workerMu.Lock()
 	info := h.gitInfoCache[repo]
-	h.workerMu.Unlock()
 	if info == nil || info.PR == nil || info.PR.URL == "" {
 		debuglog.Logger.Debug("openPR: no PR for branch", "repo", repo)
 		h.setError(fmt.Errorf("no PR for this branch"))
@@ -1910,10 +1923,8 @@ func (h *Home) undoDelete() (tea.Model, tea.Cmd) {
 	}
 
 	// Re-add to UI's session list mirror.
-	h.workerMu.Lock()
 	h.sessions = append(h.sessions, pd.Session)
 	h.rebuildSessionMap()
-	h.workerMu.Unlock()
 
 	// Expand repo group and rebuild sidebar.
 	h.repoExpanded[pd.RepoPath] = true
@@ -2038,303 +2049,10 @@ func (h *Home) countSessionsForRepo(repoPath string) int {
 
 // --- Tick / status ---
 
-func (h *Home) tick() tea.Cmd {
-	interval := tickInterval
-	if h.cfg != nil && h.cfg.TickIntervalSec > 0 {
-		interval = time.Duration(h.cfg.TickIntervalSec) * time.Second
-	}
-	return tea.Tick(interval, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
-}
-
 func (h *Home) previewTick() tea.Cmd {
 	return tea.Tick(previewTickInterval, func(t time.Time) tea.Msg {
 		return previewTickMsg(t)
 	})
-}
-
-// listenForHookChanges blocks until the HookWatcher signals a status change,
-// then returns a hookChangedMsg. Runs as a tea.Cmd in its own goroutine.
-func (h *Home) listenForHookChanges() tea.Msg {
-	if h.hookWatcher == nil {
-		return nil
-	}
-	select {
-	case <-h.hookWatcher.Changes():
-		return hookChangedMsg{}
-	case <-h.ctx.Done():
-		return nil
-	}
-}
-
-func (h *Home) handleTick() (tea.Model, tea.Cmd) {
-	// Trigger background worker (non-blocking).
-	select {
-	case h.statusTrigger <- struct{}{}:
-	default: // worker busy, skip
-	}
-
-	// Read worker results under lock and rebuild.
-	h.workerMu.Lock()
-	h.rebuildFlatItems()
-	h.workerMu.Unlock()
-
-	// Preview is now handled by the faster previewTick, no need to fetch here.
-	return h, h.tick()
-}
-
-// statusWorker runs in its own goroutine, performing all blocking I/O
-// (tmux, git, gh) outside the Bubble Tea Update() loop.
-func (h *Home) statusWorker() {
-	ticker := time.NewTicker(tickInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-h.ctx.Done():
-			return
-		case <-h.statusTrigger:
-		case <-ticker.C:
-		}
-
-		h.statusWorkerCycle()
-	}
-}
-
-// syncHookStatuses reads the latest hook statuses from the HookWatcher and applies
-// them to the given sessions. Caller must ensure thread-safe access to sessions.
-// Returns the IDs of sessions whose hook meaningfully changed (new status or timestamp);
-// callers can forward these to priorityStatusUpdates for immediate UpdateStatus().
-func (h *Home) syncHookStatuses(sessions []*session.Session) []string {
-	if h.hookWatcher == nil {
-		return nil
-	}
-	var changed []string
-	for _, s := range sessions {
-		hs := h.hookWatcher.GetStatus(s.ID)
-		if hs != nil {
-			oldClaudeSessionID := s.ClaudeSessionID
-			oldFirstPrompt := s.FirstPrompt
-			oldPromptCount := s.PromptCount
-			if s.UpdateHookStatus(&session.HookStatus{
-				Status:      hs.Status,
-				SessionID:   hs.SessionID,
-				UpdatedAt:   hs.UpdatedAt,
-				UserPrompt:  hs.UserPrompt,
-				PromptCount: hs.PromptCount,
-			}) {
-				changed = append(changed, s.ID)
-			}
-			// Persist new Claude session ID if it changed.
-			if s.ClaudeSessionID != oldClaudeSessionID && s.ClaudeSessionID != "" {
-				if err := h.storage.UpdateClaudeSessionID(s.ID, s.ClaudeSessionID); err != nil {
-					debuglog.Logger.Error("storage: UpdateClaudeSessionID", "id", s.ID, "err", err)
-				}
-			}
-			// Persist prompt changes and reset title on every new prompt
-			// (for non-manually-renamed, non-Claude-named sessions).
-			if s.PromptCount != oldPromptCount {
-				h.markSessionAccessed(s)
-				if err := h.storage.UpdatePromptCount(s.ID, s.PromptCount); err != nil {
-					debuglog.Logger.Error("storage: UpdatePromptCount", "id", s.ID, "err", err)
-				}
-				if h.cfg.IsAutoNameEnabled() && s.TitleGenerated && !s.ManuallyRenamed && s.ClaudeSessionName == "" {
-					s.TitleGenerated = false
-					if err := h.storage.ResetTitleGenerated(s.ID); err != nil {
-						debuglog.Logger.Error("storage: ResetTitleGenerated", "id", s.ID, "err", err)
-					}
-				}
-			}
-			if s.FirstPrompt != "" && s.FirstPrompt != oldFirstPrompt {
-				if err := h.storage.UpdateFirstPrompt(s.ID, s.FirstPrompt); err != nil {
-					debuglog.Logger.Error("storage: UpdateFirstPrompt", "id", s.ID, "err", err)
-				}
-			}
-		}
-	}
-	return changed
-}
-
-// updateAndPersistStatus runs a full UpdateStatus() on the session and persists
-// the result to storage if the status changed. Called from the worker goroutine.
-func (h *Home) updateAndPersistStatus(s *session.Session) {
-	oldStatus := s.GetStatus()
-	s.UpdateStatus()
-	newStatus := s.GetStatus()
-	if oldStatus != newStatus {
-		if err := h.storage.UpdateStatus(s.ID, string(newStatus)); err != nil {
-			debuglog.Logger.Error("storage: UpdateStatus", "id", s.ID, "status", newStatus, "err", err)
-		}
-	}
-}
-
-// enqueuePriorityUpdates pushes session IDs into the worker's priority queue
-// and kicks the worker to drain them immediately. Safe to call from any goroutine.
-func (h *Home) enqueuePriorityUpdates(ids []string) {
-	if len(ids) == 0 {
-		return
-	}
-	for _, id := range ids {
-		select {
-		case h.priorityStatusUpdates <- id:
-		default:
-			// Queue full — next worker cycle's round-robin will still catch it.
-		}
-	}
-	select {
-	case h.statusTrigger <- struct{}{}:
-	default:
-	}
-}
-
-func (h *Home) statusWorkerCycle() {
-	// Recover from panics to keep the worker alive.
-	defer func() {
-		if r := recover(); r != nil {
-			debuglog.Logger.Error("statusWorkerCycle panic recovered", "panic", r)
-		}
-	}()
-
-	// 1. Refresh tmux session cache (blocking but in background).
-	tmux.RefreshSessionCache()
-
-	// 2. Take a snapshot of sessions under lock.
-	h.workerMu.Lock()
-	sessions := make([]*session.Session, len(h.sessions))
-	copy(sessions, h.sessions)
-	h.workerMu.Unlock()
-
-	if len(sessions) == 0 {
-		return
-	}
-
-	// 3. Sync hook status (fast: in-memory map lookups).
-	h.syncHookStatuses(sessions)
-
-	// 3b. Auto-name: generate title for ONE session per cycle.
-	// Priority: manual (R key) > Claude session name > last prompt heuristic.
-	if h.cfg.IsAutoNameEnabled() {
-		for _, s := range sessions {
-			if s.ManuallyRenamed {
-				continue
-			}
-
-			// Periodically re-read Claude's session name from JSONL (~every 30s per session).
-			if s.ClaudeSessionID != "" && time.Since(s.ClaudeNameLastChecked) > 30*time.Second {
-				s.ClaudeNameLastChecked = time.Now()
-				name := session.ReadClaudeSessionName(s.ClaudeSessionID, s.ProjectPath)
-				if name != "" && name != s.ClaudeSessionName {
-					s.ClaudeSessionName = name
-					s.Title = name
-					if err := h.storage.UpdateTitle(s.ID, name); err != nil {
-						debuglog.Logger.Error("storage: UpdateTitle (claude name)", "id", s.ID, "err", err)
-					}
-					s.TitleGenerated = true
-					if err := h.storage.MarkTitleGenerated(s.ID); err != nil {
-						debuglog.Logger.Error("storage: MarkTitleGenerated", "id", s.ID, "err", err)
-					}
-				}
-			}
-			if s.ClaudeSessionName != "" {
-				continue
-			}
-
-			// Fallback: prompt-based title heuristic.
-			if s.FirstPrompt != "" && !s.TitleGenerated {
-				title := naming.GenerateTitle(s.FirstPrompt)
-				if title != "" && title != s.Title {
-					s.Title = title
-					if err := h.storage.UpdateTitle(s.ID, title); err != nil {
-						debuglog.Logger.Error("storage: UpdateTitle (auto-name)", "id", s.ID, "err", err)
-					}
-				}
-				s.TitleGenerated = true
-				if err := h.storage.MarkTitleGenerated(s.ID); err != nil {
-					debuglog.Logger.Error("storage: MarkTitleGenerated", "id", s.ID, "err", err)
-				}
-				break // one per cycle
-			}
-		}
-	}
-
-	// 4. Priority updates first — sessions whose hook file just changed.
-	// These bypass round-robin so the UI reflects fresh hook status within
-	// ~100ms of the hook firing (vs. up to (N/statusRoundRobin)*tickInterval seconds).
-	priorityIDs := make(map[string]bool)
-drainPriority:
-	for {
-		select {
-		case id := <-h.priorityStatusUpdates:
-			priorityIDs[id] = true
-		default:
-			break drainPriority
-		}
-	}
-	processed := make(map[string]bool, len(priorityIDs))
-	for _, s := range sessions {
-		if !priorityIDs[s.ID] {
-			continue
-		}
-		h.updateAndPersistStatus(s)
-		processed[s.ID] = true
-	}
-
-	// 5. Round-robin status updates (pane capture — blocking), skipping already-processed.
-	count := statusRoundRobin
-	if count > len(sessions) {
-		count = len(sessions)
-	}
-	for i := 0; i < count; i++ {
-		idx := (h.statusRRIndex + i) % len(sessions)
-		s := sessions[idx]
-		if processed[s.ID] {
-			continue
-		}
-		h.updateAndPersistStatus(s)
-	}
-	h.statusRRIndex = (h.statusRRIndex + count) % len(sessions)
-
-	// 5. Git info refresh: 1 repo per cycle (round-robin).
-	repos := h.uniqueRepoPathsFromSessions(sessions)
-	if len(repos) > 0 {
-		idx := h.gitRRIndex % len(repos)
-		repo := repos[idx]
-
-		info := git.RefreshGitInfo(repo)
-
-		// Preserve PR data unless TTL expired.
-		h.workerMu.Lock()
-		if old, ok := h.gitInfoCache[repo]; ok && old.PR != nil {
-			info.PR = old.PR
-			info.LastPRRefresh = old.LastPRRefresh
-		}
-		h.workerMu.Unlock()
-
-		if h.ghAvailable && (info.LastPRRefresh.IsZero() || time.Since(info.LastPRRefresh) > 60*time.Second) {
-			git.RefreshPRInfo(info, repo)
-		}
-
-		h.workerMu.Lock()
-		h.gitInfoCache[repo] = info
-		h.workerMu.Unlock()
-
-		h.gitRRIndex++
-	}
-}
-
-// uniqueRepoPathsFromSessions returns distinct repo root paths from the given sessions.
-func (h *Home) uniqueRepoPathsFromSessions(sessions []*session.Session) []string {
-	seen := make(map[string]bool)
-	var repos []string
-	for _, s := range sessions {
-		root := session.GetRepoRoot(s.ProjectPath)
-		if !seen[root] {
-			seen[root] = true
-			repos = append(repos, root)
-		}
-	}
-	return repos
 }
 
 func (h *Home) resolveCurrentRepo() string {
@@ -2879,21 +2597,15 @@ func (h *Home) reloadAll() tea.Cmd {
 
 		for _, t := range targets {
 			wg.Add(1)
-			go func(s *session.Session, title string) {
+			go func(id, title string) {
 				defer wg.Done()
-				var err error
-				if s.IsAlive() && !s.GetTmuxSession().IsPaneDead() {
-					err = s.RespawnClaude()
-				} else {
-					err = s.Restart()
-				}
-				if err != nil {
+				if err := h.svc.RestartSession(id); err != nil {
 					mu.Lock()
 					errors = append(errors, title)
 					mu.Unlock()
 					debuglog.Logger.Error("reload all: restart failed", "title", title, "err", err)
 				}
-			}(t.session, t.title)
+			}(t.session.ID, t.title)
 		}
 
 		wg.Wait()
