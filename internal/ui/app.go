@@ -109,9 +109,12 @@ type Home struct {
 
 	sessions    []*session.Session
 	sessionByID map[string]*session.Session
-	svc         *service.SessionService
-	storage     *session.StateDB
-	flatItems   []SidebarItem
+	// svc is the abstract service surface — either an in-process
+	// *service.SessionService or an *daemonclient.Client (Stage 0 PR 5).
+	// All UI consumers route through service.Service methods.
+	svc       service.Service
+	storage   *session.StateDB
+	flatItems []SidebarItem
 
 	cursor     int
 	viewOffset int
@@ -189,7 +192,7 @@ type Home struct {
 }
 
 // NewHome creates the main TUI model.
-func NewHome(svc *service.SessionService, storage *session.StateDB, cfg *config.Config, version string) *Home {
+func NewHome(svc service.Service, storage *session.StateDB, cfg *config.Config, version string) *Home {
 	fi := textinput.New()
 	fi.Placeholder = "filter..."
 	fi.CharLimit = 64

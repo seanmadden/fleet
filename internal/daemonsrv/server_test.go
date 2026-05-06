@@ -237,9 +237,30 @@ func (f *fakeService) UnpinRepo(path string) error {
 	return nil
 }
 
-func (f *fakeService) SnapshotForUndo(_ string) (*session.SessionRow, error) { return nil, nil }
-func (f *fakeService) SoftDelete(_ string) (*session.SessionRow, error)      { return nil, nil }
-func (f *fakeService) RestoreDeleted(_ *session.SessionRow) error            { return nil }
+func (f *fakeService) SnapshotForUndo(id string) (*session.SessionRow, error) {
+	if s := f.GetSession(id); s != nil {
+		return &session.SessionRow{ID: s.ID, Title: s.Title, ProjectPath: s.ProjectPath, Status: string(s.Status)}, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (f *fakeService) SoftDelete(id string) (*session.SessionRow, error) {
+	row, err := f.SnapshotForUndo(id)
+	if err != nil {
+		return nil, err
+	}
+	f.deleteSessionDirect(id)
+	return row, nil
+}
+
+func (f *fakeService) RestoreDeleted(row *session.SessionRow) error {
+	if row == nil {
+		return errors.New("nil row")
+	}
+	f.addSession(&session.Session{ID: row.ID, Title: row.Title, ProjectPath: row.ProjectPath, Status: session.Status(row.Status), CreatedAt: time.Now()})
+	return nil
+}
+
 func (f *fakeService) SoftRestore(_ *session.Session, _ *session.SessionRow) error {
 	return nil
 }
@@ -431,19 +452,104 @@ func TestServer_SlotBindings_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestServer_Unimplemented_SendKeys(t *testing.T) {
+func TestServer_SendKeys_NotFound(t *testing.T) {
 	fake := newFakeService()
 	client, stop := startTestServer(t, fake)
 	defer stop()
 
-	_, err := client.SendKeys(context.Background(), &fleetv1.SendKeysRequest{SessionId: "x", Keys: []string{"y"}})
-	if status.Code(err) != codes.Unimplemented {
-		t.Errorf("SendKeys: want Unimplemented, got %v", err)
+	_, err := client.SendKeys(context.Background(), &fleetv1.SendKeysRequest{SessionId: "ghost", Keys: []string{"y"}})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("SendKeys ghost: want NotFound, got %v", err)
+	}
+}
+
+func TestServer_SendKeys_NoTmuxPane(t *testing.T) {
+	fake := newFakeService()
+	// fakeService creates Sessions without a tmux handle, so SendKeys should
+	// reject with FailedPrecondition rather than panic.
+	fake.addSession(&session.Session{ID: "no-tmux", ProjectPath: "/tmp", CreatedAt: time.Now()})
+	client, stop := startTestServer(t, fake)
+	defer stop()
+
+	_, err := client.SendKeys(context.Background(), &fleetv1.SendKeysRequest{SessionId: "no-tmux", Keys: []string{"y"}})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("SendKeys without tmux: want FailedPrecondition, got %v", err)
+	}
+}
+
+func TestServer_CapturePane_NotFound(t *testing.T) {
+	fake := newFakeService()
+	client, stop := startTestServer(t, fake)
+	defer stop()
+
+	_, err := client.CapturePane(context.Background(), &fleetv1.CapturePaneRequest{SessionId: "ghost"})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("CapturePane ghost: want NotFound, got %v", err)
+	}
+}
+
+func TestServer_SoftDelete_RestoreRoundTrip(t *testing.T) {
+	fake := newFakeService()
+	fake.addSession(&session.Session{ID: "doomed", Title: "doomed", ProjectPath: "/tmp", Status: session.StatusRunning, CreatedAt: time.Now()})
+	client, stop := startTestServer(t, fake)
+	defer stop()
+
+	if _, err := client.SoftDeleteSession(context.Background(), &fleetv1.SoftDeleteSessionRequest{Id: "doomed"}); err != nil {
+		t.Fatalf("SoftDeleteSession: %v", err)
+	}
+	if got := fake.GetSession("doomed"); got != nil {
+		t.Errorf("after soft delete: session should be removed from svc, got %+v", got)
 	}
 
-	_, err = client.GetConfig(context.Background(), nil)
+	resp, err := client.RestoreSession(context.Background(), &fleetv1.RestoreSessionRequest{Id: "doomed"})
+	if err != nil {
+		t.Fatalf("RestoreSession: %v", err)
+	}
+	if resp.Id != "doomed" || resp.Title != "doomed" {
+		t.Errorf("restored session: want id=title=doomed, got id=%q title=%q", resp.Id, resp.Title)
+	}
+	if got := fake.GetSession("doomed"); got == nil {
+		t.Errorf("after restore: session should be present in svc, got nil")
+	}
+}
+
+func TestServer_RestoreSession_NotFound(t *testing.T) {
+	fake := newFakeService()
+	client, stop := startTestServer(t, fake)
+	defer stop()
+
+	_, err := client.RestoreSession(context.Background(), &fleetv1.RestoreSessionRequest{Id: "never-deleted"})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("RestoreSession with no tombstone: want NotFound, got %v", err)
+	}
+}
+
+func TestServer_SoftDelete_NotFound(t *testing.T) {
+	fake := newFakeService()
+	client, stop := startTestServer(t, fake)
+	defer stop()
+
+	_, err := client.SoftDeleteSession(context.Background(), &fleetv1.SoftDeleteSessionRequest{Id: "ghost"})
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("SoftDeleteSession ghost: want NotFound, got %v", err)
+	}
+}
+
+func TestServer_Unimplemented_StillStubbed(t *testing.T) {
+	fake := newFakeService()
+	client, stop := startTestServer(t, fake)
+	defer stop()
+
+	// Workspace / Config / HookEvent surfaces remain stubbed after PR 5;
+	// guard against accidental implementation that would break existing
+	// clients before they're ready.
+	_, err := client.GetConfig(context.Background(), nil)
 	if status.Code(err) != codes.Unimplemented {
 		t.Errorf("GetConfig: want Unimplemented, got %v", err)
+	}
+	_, err = client.ListWorkspaces(context.Background(), &fleetv1.ListWorkspacesRequest{RepoRoot: "/tmp"})
+	if status.Code(err) != codes.Unimplemented {
+		t.Errorf("ListWorkspaces: want Unimplemented, got %v", err)
 	}
 }
 

@@ -1419,6 +1419,94 @@ func (x *AcknowledgeSessionRequest) GetId() string {
 	return ""
 }
 
+type SoftDeleteSessionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SoftDeleteSessionRequest) Reset() {
+	*x = SoftDeleteSessionRequest{}
+	mi := &file_fleet_v1_fleet_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SoftDeleteSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SoftDeleteSessionRequest) ProtoMessage() {}
+
+func (x *SoftDeleteSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fleet_v1_fleet_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SoftDeleteSessionRequest.ProtoReflect.Descriptor instead.
+func (*SoftDeleteSessionRequest) Descriptor() ([]byte, []int) {
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *SoftDeleteSessionRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type RestoreSessionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreSessionRequest) Reset() {
+	*x = RestoreSessionRequest{}
+	mi := &file_fleet_v1_fleet_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreSessionRequest) ProtoMessage() {}
+
+func (x *RestoreSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fleet_v1_fleet_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreSessionRequest.ProtoReflect.Descriptor instead.
+func (*RestoreSessionRequest) Descriptor() ([]byte, []int) {
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *RestoreSessionRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
 type SendKeysRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -1434,7 +1522,7 @@ type SendKeysRequest struct {
 
 func (x *SendKeysRequest) Reset() {
 	*x = SendKeysRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[15]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1446,7 +1534,7 @@ func (x *SendKeysRequest) String() string {
 func (*SendKeysRequest) ProtoMessage() {}
 
 func (x *SendKeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[15]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1459,7 +1547,7 @@ func (x *SendKeysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendKeysRequest.ProtoReflect.Descriptor instead.
 func (*SendKeysRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{15}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *SendKeysRequest) GetSessionId() string {
@@ -1496,7 +1584,7 @@ type CapturePaneRequest struct {
 
 func (x *CapturePaneRequest) Reset() {
 	*x = CapturePaneRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[16]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1508,7 +1596,7 @@ func (x *CapturePaneRequest) String() string {
 func (*CapturePaneRequest) ProtoMessage() {}
 
 func (x *CapturePaneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[16]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1521,7 +1609,7 @@ func (x *CapturePaneRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapturePaneRequest.ProtoReflect.Descriptor instead.
 func (*CapturePaneRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{16}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CapturePaneRequest) GetSessionId() string {
@@ -1555,7 +1643,7 @@ type CapturePaneResponse struct {
 
 func (x *CapturePaneResponse) Reset() {
 	*x = CapturePaneResponse{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[17]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1567,7 +1655,7 @@ func (x *CapturePaneResponse) String() string {
 func (*CapturePaneResponse) ProtoMessage() {}
 
 func (x *CapturePaneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[17]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1580,7 +1668,7 @@ func (x *CapturePaneResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapturePaneResponse.ProtoReflect.Descriptor instead.
 func (*CapturePaneResponse) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{17}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CapturePaneResponse) GetContent() string {
@@ -1605,7 +1693,7 @@ type ListReposRequest struct {
 
 func (x *ListReposRequest) Reset() {
 	*x = ListReposRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[18]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1617,7 +1705,7 @@ func (x *ListReposRequest) String() string {
 func (*ListReposRequest) ProtoMessage() {}
 
 func (x *ListReposRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[18]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1630,7 +1718,7 @@ func (x *ListReposRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListReposRequest.ProtoReflect.Descriptor instead.
 func (*ListReposRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{18}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{20}
 }
 
 type RepoUpdate struct {
@@ -1644,7 +1732,7 @@ type RepoUpdate struct {
 
 func (x *RepoUpdate) Reset() {
 	*x = RepoUpdate{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[19]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1656,7 +1744,7 @@ func (x *RepoUpdate) String() string {
 func (*RepoUpdate) ProtoMessage() {}
 
 func (x *RepoUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[19]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1669,7 +1757,7 @@ func (x *RepoUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RepoUpdate.ProtoReflect.Descriptor instead.
 func (*RepoUpdate) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{19}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *RepoUpdate) GetKind() RepoUpdateKind {
@@ -1702,7 +1790,7 @@ type PinRepoRequest struct {
 
 func (x *PinRepoRequest) Reset() {
 	*x = PinRepoRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[20]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1714,7 +1802,7 @@ func (x *PinRepoRequest) String() string {
 func (*PinRepoRequest) ProtoMessage() {}
 
 func (x *PinRepoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[20]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1727,7 +1815,7 @@ func (x *PinRepoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PinRepoRequest.ProtoReflect.Descriptor instead.
 func (*PinRepoRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{20}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *PinRepoRequest) GetRoot() string {
@@ -1746,7 +1834,7 @@ type UnpinRepoRequest struct {
 
 func (x *UnpinRepoRequest) Reset() {
 	*x = UnpinRepoRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[21]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1758,7 +1846,7 @@ func (x *UnpinRepoRequest) String() string {
 func (*UnpinRepoRequest) ProtoMessage() {}
 
 func (x *UnpinRepoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[21]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1771,7 +1859,7 @@ func (x *UnpinRepoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnpinRepoRequest.ProtoReflect.Descriptor instead.
 func (*UnpinRepoRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{21}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *UnpinRepoRequest) GetRoot() string {
@@ -1790,7 +1878,7 @@ type ListWorkspacesRequest struct {
 
 func (x *ListWorkspacesRequest) Reset() {
 	*x = ListWorkspacesRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[22]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1802,7 +1890,7 @@ func (x *ListWorkspacesRequest) String() string {
 func (*ListWorkspacesRequest) ProtoMessage() {}
 
 func (x *ListWorkspacesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[22]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1815,7 +1903,7 @@ func (x *ListWorkspacesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkspacesRequest.ProtoReflect.Descriptor instead.
 func (*ListWorkspacesRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{22}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ListWorkspacesRequest) GetRepoRoot() string {
@@ -1835,7 +1923,7 @@ type ListWorkspacesResponse struct {
 
 func (x *ListWorkspacesResponse) Reset() {
 	*x = ListWorkspacesResponse{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[23]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1847,7 +1935,7 @@ func (x *ListWorkspacesResponse) String() string {
 func (*ListWorkspacesResponse) ProtoMessage() {}
 
 func (x *ListWorkspacesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[23]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1860,7 +1948,7 @@ func (x *ListWorkspacesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkspacesResponse.ProtoReflect.Descriptor instead.
 func (*ListWorkspacesResponse) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{23}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListWorkspacesResponse) GetWorkspaces() []*Workspace {
@@ -1889,7 +1977,7 @@ type CreateWorkspaceRequest struct {
 
 func (x *CreateWorkspaceRequest) Reset() {
 	*x = CreateWorkspaceRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[24]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1901,7 +1989,7 @@ func (x *CreateWorkspaceRequest) String() string {
 func (*CreateWorkspaceRequest) ProtoMessage() {}
 
 func (x *CreateWorkspaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[24]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1914,7 +2002,7 @@ func (x *CreateWorkspaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateWorkspaceRequest.ProtoReflect.Descriptor instead.
 func (*CreateWorkspaceRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{24}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateWorkspaceRequest) GetRepoRoot() string {
@@ -1957,7 +2045,7 @@ type CreateWorkspaceResponse struct {
 
 func (x *CreateWorkspaceResponse) Reset() {
 	*x = CreateWorkspaceResponse{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[25]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1969,7 +2057,7 @@ func (x *CreateWorkspaceResponse) String() string {
 func (*CreateWorkspaceResponse) ProtoMessage() {}
 
 func (x *CreateWorkspaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[25]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1982,7 +2070,7 @@ func (x *CreateWorkspaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateWorkspaceResponse.ProtoReflect.Descriptor instead.
 func (*CreateWorkspaceResponse) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{25}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CreateWorkspaceResponse) GetWorkspace() *Workspace {
@@ -2009,7 +2097,7 @@ type DestroyWorkspaceRequest struct {
 
 func (x *DestroyWorkspaceRequest) Reset() {
 	*x = DestroyWorkspaceRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[26]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2021,7 +2109,7 @@ func (x *DestroyWorkspaceRequest) String() string {
 func (*DestroyWorkspaceRequest) ProtoMessage() {}
 
 func (x *DestroyWorkspaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[26]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2034,7 +2122,7 @@ func (x *DestroyWorkspaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DestroyWorkspaceRequest.ProtoReflect.Descriptor instead.
 func (*DestroyWorkspaceRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{26}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *DestroyWorkspaceRequest) GetRepoRoot() string {
@@ -2060,7 +2148,7 @@ type ListSlotBindingsResponse struct {
 
 func (x *ListSlotBindingsResponse) Reset() {
 	*x = ListSlotBindingsResponse{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[27]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2072,7 +2160,7 @@ func (x *ListSlotBindingsResponse) String() string {
 func (*ListSlotBindingsResponse) ProtoMessage() {}
 
 func (x *ListSlotBindingsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[27]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2085,7 +2173,7 @@ func (x *ListSlotBindingsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSlotBindingsResponse.ProtoReflect.Descriptor instead.
 func (*ListSlotBindingsResponse) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{27}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListSlotBindingsResponse) GetBindings() []*SlotBinding {
@@ -2105,7 +2193,7 @@ type BindSlotRequest struct {
 
 func (x *BindSlotRequest) Reset() {
 	*x = BindSlotRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[28]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2117,7 +2205,7 @@ func (x *BindSlotRequest) String() string {
 func (*BindSlotRequest) ProtoMessage() {}
 
 func (x *BindSlotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[28]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2130,7 +2218,7 @@ func (x *BindSlotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BindSlotRequest.ProtoReflect.Descriptor instead.
 func (*BindSlotRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{28}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *BindSlotRequest) GetSlot() int32 {
@@ -2156,7 +2244,7 @@ type UnbindSlotRequest struct {
 
 func (x *UnbindSlotRequest) Reset() {
 	*x = UnbindSlotRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[29]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2168,7 +2256,7 @@ func (x *UnbindSlotRequest) String() string {
 func (*UnbindSlotRequest) ProtoMessage() {}
 
 func (x *UnbindSlotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[29]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2181,7 +2269,7 @@ func (x *UnbindSlotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnbindSlotRequest.ProtoReflect.Descriptor instead.
 func (*UnbindSlotRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{29}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *UnbindSlotRequest) GetSlot() int32 {
@@ -2201,7 +2289,7 @@ type StreamHookEventsRequest struct {
 
 func (x *StreamHookEventsRequest) Reset() {
 	*x = StreamHookEventsRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[30]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2213,7 +2301,7 @@ func (x *StreamHookEventsRequest) String() string {
 func (*StreamHookEventsRequest) ProtoMessage() {}
 
 func (x *StreamHookEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[30]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2226,7 +2314,7 @@ func (x *StreamHookEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamHookEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamHookEventsRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{30}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *StreamHookEventsRequest) GetSessionIdFilter() string {
@@ -2245,7 +2333,7 @@ type UpdateConfigRequest struct {
 
 func (x *UpdateConfigRequest) Reset() {
 	*x = UpdateConfigRequest{}
-	mi := &file_fleet_v1_fleet_proto_msgTypes[31]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2257,7 +2345,7 @@ func (x *UpdateConfigRequest) String() string {
 func (*UpdateConfigRequest) ProtoMessage() {}
 
 func (x *UpdateConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_fleet_v1_fleet_proto_msgTypes[31]
+	mi := &file_fleet_v1_fleet_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2270,7 +2358,7 @@ func (x *UpdateConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateConfigRequest.ProtoReflect.Descriptor instead.
 func (*UpdateConfigRequest) Descriptor() ([]byte, []int) {
-	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{31}
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *UpdateConfigRequest) GetConfig() *Config {
@@ -2375,6 +2463,10 @@ const file_fleet_v1_fleet_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\"+\n" +
 	"\x19AcknowledgeSessionRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"*\n" +
+	"\x18SoftDeleteSessionRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"'\n" +
+	"\x15RestoreSessionRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\\\n" +
 	"\x0fSendKeysRequest\x12\x1d\n" +
 	"\n" +
@@ -2466,7 +2558,7 @@ const file_fleet_v1_fleet_proto_rawDesc = "" +
 	"\x19REPO_UPDATE_KIND_SNAPSHOT\x10\x01\x12\x1a\n" +
 	"\x16REPO_UPDATE_KIND_ADDED\x10\x02\x12\x1c\n" +
 	"\x18REPO_UPDATE_KIND_CHANGED\x10\x03\x12\x1c\n" +
-	"\x18REPO_UPDATE_KIND_REMOVED\x10\x042\xd7\v\n" +
+	"\x18REPO_UPDATE_KIND_REMOVED\x10\x042\xee\f\n" +
 	"\x05Fleet\x12H\n" +
 	"\fListSessions\x12\x1d.fleet.v1.ListSessionsRequest\x1a\x17.fleet.v1.SessionUpdate0\x01\x12<\n" +
 	"\n" +
@@ -2475,7 +2567,9 @@ const file_fleet_v1_fleet_proto_rawDesc = "" +
 	"\rDeleteSession\x12\x1e.fleet.v1.DeleteSessionRequest\x1a\x16.google.protobuf.Empty\x12D\n" +
 	"\x0eRestartSession\x12\x1f.fleet.v1.RestartSessionRequest\x1a\x11.fleet.v1.Session\x12B\n" +
 	"\rRenameSession\x12\x1e.fleet.v1.RenameSessionRequest\x1a\x11.fleet.v1.Session\x12Q\n" +
-	"\x12AcknowledgeSession\x12#.fleet.v1.AcknowledgeSessionRequest\x1a\x16.google.protobuf.Empty\x12=\n" +
+	"\x12AcknowledgeSession\x12#.fleet.v1.AcknowledgeSessionRequest\x1a\x16.google.protobuf.Empty\x12O\n" +
+	"\x11SoftDeleteSession\x12\".fleet.v1.SoftDeleteSessionRequest\x1a\x16.google.protobuf.Empty\x12D\n" +
+	"\x0eRestoreSession\x12\x1f.fleet.v1.RestoreSessionRequest\x1a\x11.fleet.v1.Session\x12=\n" +
 	"\bSendKeys\x12\x19.fleet.v1.SendKeysRequest\x1a\x16.google.protobuf.Empty\x12J\n" +
 	"\vCapturePane\x12\x1c.fleet.v1.CapturePaneRequest\x1a\x1d.fleet.v1.CapturePaneResponse\x12?\n" +
 	"\tListRepos\x12\x1a.fleet.v1.ListReposRequest\x1a\x14.fleet.v1.RepoUpdate0\x01\x12;\n" +
@@ -2505,7 +2599,7 @@ func file_fleet_v1_fleet_proto_rawDescGZIP() []byte {
 }
 
 var file_fleet_v1_fleet_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_fleet_v1_fleet_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_fleet_v1_fleet_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_fleet_v1_fleet_proto_goTypes = []any{
 	(Status)(0),                       // 0: fleet.v1.Status
 	(HookKind)(0),                     // 1: fleet.v1.HookKind
@@ -2527,39 +2621,41 @@ var file_fleet_v1_fleet_proto_goTypes = []any{
 	(*RestartSessionRequest)(nil),     // 17: fleet.v1.RestartSessionRequest
 	(*RenameSessionRequest)(nil),      // 18: fleet.v1.RenameSessionRequest
 	(*AcknowledgeSessionRequest)(nil), // 19: fleet.v1.AcknowledgeSessionRequest
-	(*SendKeysRequest)(nil),           // 20: fleet.v1.SendKeysRequest
-	(*CapturePaneRequest)(nil),        // 21: fleet.v1.CapturePaneRequest
-	(*CapturePaneResponse)(nil),       // 22: fleet.v1.CapturePaneResponse
-	(*ListReposRequest)(nil),          // 23: fleet.v1.ListReposRequest
-	(*RepoUpdate)(nil),                // 24: fleet.v1.RepoUpdate
-	(*PinRepoRequest)(nil),            // 25: fleet.v1.PinRepoRequest
-	(*UnpinRepoRequest)(nil),          // 26: fleet.v1.UnpinRepoRequest
-	(*ListWorkspacesRequest)(nil),     // 27: fleet.v1.ListWorkspacesRequest
-	(*ListWorkspacesResponse)(nil),    // 28: fleet.v1.ListWorkspacesResponse
-	(*CreateWorkspaceRequest)(nil),    // 29: fleet.v1.CreateWorkspaceRequest
-	(*CreateWorkspaceResponse)(nil),   // 30: fleet.v1.CreateWorkspaceResponse
-	(*DestroyWorkspaceRequest)(nil),   // 31: fleet.v1.DestroyWorkspaceRequest
-	(*ListSlotBindingsResponse)(nil),  // 32: fleet.v1.ListSlotBindingsResponse
-	(*BindSlotRequest)(nil),           // 33: fleet.v1.BindSlotRequest
-	(*UnbindSlotRequest)(nil),         // 34: fleet.v1.UnbindSlotRequest
-	(*StreamHookEventsRequest)(nil),   // 35: fleet.v1.StreamHookEventsRequest
-	(*UpdateConfigRequest)(nil),       // 36: fleet.v1.UpdateConfigRequest
-	(*timestamppb.Timestamp)(nil),     // 37: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),             // 38: google.protobuf.Empty
+	(*SoftDeleteSessionRequest)(nil),  // 20: fleet.v1.SoftDeleteSessionRequest
+	(*RestoreSessionRequest)(nil),     // 21: fleet.v1.RestoreSessionRequest
+	(*SendKeysRequest)(nil),           // 22: fleet.v1.SendKeysRequest
+	(*CapturePaneRequest)(nil),        // 23: fleet.v1.CapturePaneRequest
+	(*CapturePaneResponse)(nil),       // 24: fleet.v1.CapturePaneResponse
+	(*ListReposRequest)(nil),          // 25: fleet.v1.ListReposRequest
+	(*RepoUpdate)(nil),                // 26: fleet.v1.RepoUpdate
+	(*PinRepoRequest)(nil),            // 27: fleet.v1.PinRepoRequest
+	(*UnpinRepoRequest)(nil),          // 28: fleet.v1.UnpinRepoRequest
+	(*ListWorkspacesRequest)(nil),     // 29: fleet.v1.ListWorkspacesRequest
+	(*ListWorkspacesResponse)(nil),    // 30: fleet.v1.ListWorkspacesResponse
+	(*CreateWorkspaceRequest)(nil),    // 31: fleet.v1.CreateWorkspaceRequest
+	(*CreateWorkspaceResponse)(nil),   // 32: fleet.v1.CreateWorkspaceResponse
+	(*DestroyWorkspaceRequest)(nil),   // 33: fleet.v1.DestroyWorkspaceRequest
+	(*ListSlotBindingsResponse)(nil),  // 34: fleet.v1.ListSlotBindingsResponse
+	(*BindSlotRequest)(nil),           // 35: fleet.v1.BindSlotRequest
+	(*UnbindSlotRequest)(nil),         // 36: fleet.v1.UnbindSlotRequest
+	(*StreamHookEventsRequest)(nil),   // 37: fleet.v1.StreamHookEventsRequest
+	(*UpdateConfigRequest)(nil),       // 38: fleet.v1.UpdateConfigRequest
+	(*timestamppb.Timestamp)(nil),     // 39: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),             // 40: google.protobuf.Empty
 }
 var file_fleet_v1_fleet_proto_depIdxs = []int32{
 	0,  // 0: fleet.v1.Session.status:type_name -> fleet.v1.Status
-	37, // 1: fleet.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	37, // 2: fleet.v1.Session.last_accessed_at:type_name -> google.protobuf.Timestamp
+	39, // 1: fleet.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	39, // 2: fleet.v1.Session.last_accessed_at:type_name -> google.protobuf.Timestamp
 	7,  // 3: fleet.v1.Repo.pr:type_name -> fleet.v1.PR
-	37, // 4: fleet.v1.Repo.last_git_refresh:type_name -> google.protobuf.Timestamp
-	37, // 5: fleet.v1.Repo.last_pr_refresh:type_name -> google.protobuf.Timestamp
+	39, // 4: fleet.v1.Repo.last_git_refresh:type_name -> google.protobuf.Timestamp
+	39, // 5: fleet.v1.Repo.last_pr_refresh:type_name -> google.protobuf.Timestamp
 	1,  // 6: fleet.v1.HookEvent.kind:type_name -> fleet.v1.HookKind
-	37, // 7: fleet.v1.HookEvent.at:type_name -> google.protobuf.Timestamp
+	39, // 7: fleet.v1.HookEvent.at:type_name -> google.protobuf.Timestamp
 	3,  // 8: fleet.v1.SessionUpdate.kind:type_name -> fleet.v1.SessionUpdateKind
 	5,  // 9: fleet.v1.SessionUpdate.session:type_name -> fleet.v1.Session
 	2,  // 10: fleet.v1.DeleteSessionRequest.option:type_name -> fleet.v1.DeleteOption
-	37, // 11: fleet.v1.CapturePaneResponse.captured_at:type_name -> google.protobuf.Timestamp
+	39, // 11: fleet.v1.CapturePaneResponse.captured_at:type_name -> google.protobuf.Timestamp
 	4,  // 12: fleet.v1.RepoUpdate.kind:type_name -> fleet.v1.RepoUpdateKind
 	6,  // 13: fleet.v1.RepoUpdate.repo:type_name -> fleet.v1.Repo
 	8,  // 14: fleet.v1.ListWorkspacesResponse.workspaces:type_name -> fleet.v1.Workspace
@@ -2573,43 +2669,47 @@ var file_fleet_v1_fleet_proto_depIdxs = []int32{
 	17, // 22: fleet.v1.Fleet.RestartSession:input_type -> fleet.v1.RestartSessionRequest
 	18, // 23: fleet.v1.Fleet.RenameSession:input_type -> fleet.v1.RenameSessionRequest
 	19, // 24: fleet.v1.Fleet.AcknowledgeSession:input_type -> fleet.v1.AcknowledgeSessionRequest
-	20, // 25: fleet.v1.Fleet.SendKeys:input_type -> fleet.v1.SendKeysRequest
-	21, // 26: fleet.v1.Fleet.CapturePane:input_type -> fleet.v1.CapturePaneRequest
-	23, // 27: fleet.v1.Fleet.ListRepos:input_type -> fleet.v1.ListReposRequest
-	25, // 28: fleet.v1.Fleet.PinRepo:input_type -> fleet.v1.PinRepoRequest
-	26, // 29: fleet.v1.Fleet.UnpinRepo:input_type -> fleet.v1.UnpinRepoRequest
-	27, // 30: fleet.v1.Fleet.ListWorkspaces:input_type -> fleet.v1.ListWorkspacesRequest
-	29, // 31: fleet.v1.Fleet.CreateWorkspace:input_type -> fleet.v1.CreateWorkspaceRequest
-	31, // 32: fleet.v1.Fleet.DestroyWorkspace:input_type -> fleet.v1.DestroyWorkspaceRequest
-	38, // 33: fleet.v1.Fleet.ListSlotBindings:input_type -> google.protobuf.Empty
-	33, // 34: fleet.v1.Fleet.BindSlot:input_type -> fleet.v1.BindSlotRequest
-	34, // 35: fleet.v1.Fleet.UnbindSlot:input_type -> fleet.v1.UnbindSlotRequest
-	35, // 36: fleet.v1.Fleet.StreamHookEvents:input_type -> fleet.v1.StreamHookEventsRequest
-	38, // 37: fleet.v1.Fleet.GetConfig:input_type -> google.protobuf.Empty
-	36, // 38: fleet.v1.Fleet.UpdateConfig:input_type -> fleet.v1.UpdateConfigRequest
-	13, // 39: fleet.v1.Fleet.ListSessions:output_type -> fleet.v1.SessionUpdate
-	5,  // 40: fleet.v1.Fleet.GetSession:output_type -> fleet.v1.Session
-	5,  // 41: fleet.v1.Fleet.CreateSession:output_type -> fleet.v1.Session
-	38, // 42: fleet.v1.Fleet.DeleteSession:output_type -> google.protobuf.Empty
-	5,  // 43: fleet.v1.Fleet.RestartSession:output_type -> fleet.v1.Session
-	5,  // 44: fleet.v1.Fleet.RenameSession:output_type -> fleet.v1.Session
-	38, // 45: fleet.v1.Fleet.AcknowledgeSession:output_type -> google.protobuf.Empty
-	38, // 46: fleet.v1.Fleet.SendKeys:output_type -> google.protobuf.Empty
-	22, // 47: fleet.v1.Fleet.CapturePane:output_type -> fleet.v1.CapturePaneResponse
-	24, // 48: fleet.v1.Fleet.ListRepos:output_type -> fleet.v1.RepoUpdate
-	38, // 49: fleet.v1.Fleet.PinRepo:output_type -> google.protobuf.Empty
-	38, // 50: fleet.v1.Fleet.UnpinRepo:output_type -> google.protobuf.Empty
-	28, // 51: fleet.v1.Fleet.ListWorkspaces:output_type -> fleet.v1.ListWorkspacesResponse
-	30, // 52: fleet.v1.Fleet.CreateWorkspace:output_type -> fleet.v1.CreateWorkspaceResponse
-	38, // 53: fleet.v1.Fleet.DestroyWorkspace:output_type -> google.protobuf.Empty
-	32, // 54: fleet.v1.Fleet.ListSlotBindings:output_type -> fleet.v1.ListSlotBindingsResponse
-	38, // 55: fleet.v1.Fleet.BindSlot:output_type -> google.protobuf.Empty
-	38, // 56: fleet.v1.Fleet.UnbindSlot:output_type -> google.protobuf.Empty
-	10, // 57: fleet.v1.Fleet.StreamHookEvents:output_type -> fleet.v1.HookEvent
-	11, // 58: fleet.v1.Fleet.GetConfig:output_type -> fleet.v1.Config
-	11, // 59: fleet.v1.Fleet.UpdateConfig:output_type -> fleet.v1.Config
-	39, // [39:60] is the sub-list for method output_type
-	18, // [18:39] is the sub-list for method input_type
+	20, // 25: fleet.v1.Fleet.SoftDeleteSession:input_type -> fleet.v1.SoftDeleteSessionRequest
+	21, // 26: fleet.v1.Fleet.RestoreSession:input_type -> fleet.v1.RestoreSessionRequest
+	22, // 27: fleet.v1.Fleet.SendKeys:input_type -> fleet.v1.SendKeysRequest
+	23, // 28: fleet.v1.Fleet.CapturePane:input_type -> fleet.v1.CapturePaneRequest
+	25, // 29: fleet.v1.Fleet.ListRepos:input_type -> fleet.v1.ListReposRequest
+	27, // 30: fleet.v1.Fleet.PinRepo:input_type -> fleet.v1.PinRepoRequest
+	28, // 31: fleet.v1.Fleet.UnpinRepo:input_type -> fleet.v1.UnpinRepoRequest
+	29, // 32: fleet.v1.Fleet.ListWorkspaces:input_type -> fleet.v1.ListWorkspacesRequest
+	31, // 33: fleet.v1.Fleet.CreateWorkspace:input_type -> fleet.v1.CreateWorkspaceRequest
+	33, // 34: fleet.v1.Fleet.DestroyWorkspace:input_type -> fleet.v1.DestroyWorkspaceRequest
+	40, // 35: fleet.v1.Fleet.ListSlotBindings:input_type -> google.protobuf.Empty
+	35, // 36: fleet.v1.Fleet.BindSlot:input_type -> fleet.v1.BindSlotRequest
+	36, // 37: fleet.v1.Fleet.UnbindSlot:input_type -> fleet.v1.UnbindSlotRequest
+	37, // 38: fleet.v1.Fleet.StreamHookEvents:input_type -> fleet.v1.StreamHookEventsRequest
+	40, // 39: fleet.v1.Fleet.GetConfig:input_type -> google.protobuf.Empty
+	38, // 40: fleet.v1.Fleet.UpdateConfig:input_type -> fleet.v1.UpdateConfigRequest
+	13, // 41: fleet.v1.Fleet.ListSessions:output_type -> fleet.v1.SessionUpdate
+	5,  // 42: fleet.v1.Fleet.GetSession:output_type -> fleet.v1.Session
+	5,  // 43: fleet.v1.Fleet.CreateSession:output_type -> fleet.v1.Session
+	40, // 44: fleet.v1.Fleet.DeleteSession:output_type -> google.protobuf.Empty
+	5,  // 45: fleet.v1.Fleet.RestartSession:output_type -> fleet.v1.Session
+	5,  // 46: fleet.v1.Fleet.RenameSession:output_type -> fleet.v1.Session
+	40, // 47: fleet.v1.Fleet.AcknowledgeSession:output_type -> google.protobuf.Empty
+	40, // 48: fleet.v1.Fleet.SoftDeleteSession:output_type -> google.protobuf.Empty
+	5,  // 49: fleet.v1.Fleet.RestoreSession:output_type -> fleet.v1.Session
+	40, // 50: fleet.v1.Fleet.SendKeys:output_type -> google.protobuf.Empty
+	24, // 51: fleet.v1.Fleet.CapturePane:output_type -> fleet.v1.CapturePaneResponse
+	26, // 52: fleet.v1.Fleet.ListRepos:output_type -> fleet.v1.RepoUpdate
+	40, // 53: fleet.v1.Fleet.PinRepo:output_type -> google.protobuf.Empty
+	40, // 54: fleet.v1.Fleet.UnpinRepo:output_type -> google.protobuf.Empty
+	30, // 55: fleet.v1.Fleet.ListWorkspaces:output_type -> fleet.v1.ListWorkspacesResponse
+	32, // 56: fleet.v1.Fleet.CreateWorkspace:output_type -> fleet.v1.CreateWorkspaceResponse
+	40, // 57: fleet.v1.Fleet.DestroyWorkspace:output_type -> google.protobuf.Empty
+	34, // 58: fleet.v1.Fleet.ListSlotBindings:output_type -> fleet.v1.ListSlotBindingsResponse
+	40, // 59: fleet.v1.Fleet.BindSlot:output_type -> google.protobuf.Empty
+	40, // 60: fleet.v1.Fleet.UnbindSlot:output_type -> google.protobuf.Empty
+	10, // 61: fleet.v1.Fleet.StreamHookEvents:output_type -> fleet.v1.HookEvent
+	11, // 62: fleet.v1.Fleet.GetConfig:output_type -> fleet.v1.Config
+	11, // 63: fleet.v1.Fleet.UpdateConfig:output_type -> fleet.v1.Config
+	41, // [41:64] is the sub-list for method output_type
+	18, // [18:41] is the sub-list for method input_type
 	18, // [18:18] is the sub-list for extension type_name
 	18, // [18:18] is the sub-list for extension extendee
 	0,  // [0:18] is the sub-list for field type_name
@@ -2626,7 +2726,7 @@ func file_fleet_v1_fleet_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_fleet_v1_fleet_proto_rawDesc), len(file_fleet_v1_fleet_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   32,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

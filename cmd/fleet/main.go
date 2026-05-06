@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/brizzai/fleet/internal/config"
+	"github.com/brizzai/fleet/internal/daemonclient"
 	"github.com/brizzai/fleet/internal/debuglog"
 	"github.com/brizzai/fleet/internal/migration"
 	"github.com/brizzai/fleet/internal/service"
@@ -89,6 +91,16 @@ func runTUI() {
 	defer debuglog.Close()
 	debuglog.Logger.Info("fleet TUI starting", "version", version)
 
+	// Stage 0 PR 5: TUI defaults to driving sessions through the daemon
+	// (autospawned via `fleet daemon --detach` if not already up).
+	// `--standalone` keeps the in-process path as an escape hatch.
+	standalone := false
+	for _, a := range os.Args[1:] {
+		if a == "--standalone" {
+			standalone = true
+		}
+	}
+
 	if err := tmux.IsTmuxAvailable(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -119,8 +131,7 @@ func runTUI() {
 	}
 	defer storage.Close()
 
-	svc := service.NewSessionService(storage, cfg)
-	warning, err := svc.Start()
+	svc, warning, err := startService(standalone, storage, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start session service: %v\n", err)
 		os.Exit(1)
@@ -281,10 +292,56 @@ Usage:
   fleet list         List all sessions
   fleet remove <id>  Remove a session
   fleet hooks <install|uninstall|status>  Manage Claude Code hooks
-  fleet daemon       Run the gRPC daemon (foreground)
+  fleet daemon [--detach]    Run the gRPC daemon (foreground; --detach forks into background and logs to ~/.config/fleet/daemon.log)
   fleet update       Update to latest version
   fleet version      Show version
   fleet help         Show this help`)
+}
+
+// startService picks between the daemon-client and in-process service
+// implementations and starts the chosen one. In daemon mode it autospawns a
+// detached `fleet daemon` if no socket is listening; if either spawn or
+// connect fails, it logs the reason and falls back to standalone so the
+// TUI still launches. Returns the service plus any non-fatal warning to
+// surface in the UI.
+func startService(standalone bool, storage *session.StateDB, cfg *config.Config) (service.Service, string, error) {
+	if standalone {
+		debuglog.Logger.Info("TUI: standalone mode (in-process service)")
+		svc := service.NewSessionService(storage, cfg)
+		warn, err := svc.Start()
+		return svc, warn, err
+	}
+
+	debuglog.Logger.Info("TUI: daemon mode (autospawn if needed)")
+	ctx := context.Background()
+	sock, err := daemonclient.EnsureRunning(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: daemon unreachable, falling back to --standalone (%v)\n", err)
+		debuglog.Logger.Warn("daemon unreachable; falling back to standalone", "err", err)
+		svc := service.NewSessionService(storage, cfg)
+		warn, sErr := svc.Start()
+		return svc, prependWarning(warn, "daemon unreachable, running standalone"), sErr
+	}
+
+	client := daemonclient.New(sock)
+	warn, err := client.Start()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fleet: daemon connect failed, falling back to --standalone (%v)\n", err)
+		debuglog.Logger.Warn("daemon connect failed; falling back to standalone", "err", err)
+		svc := service.NewSessionService(storage, cfg)
+		sWarn, sErr := svc.Start()
+		return svc, prependWarning(sWarn, "daemon connect failed, running standalone"), sErr
+	}
+	return client, warn, nil
+}
+
+// prependWarning combines an existing warning string with a fallback note,
+// keeping the existing message intact if present.
+func prependWarning(existing, prefix string) string {
+	if existing == "" {
+		return prefix
+	}
+	return prefix + "; " + existing
 }
 
 func expandPath(path string) string {

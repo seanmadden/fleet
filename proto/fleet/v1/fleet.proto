@@ -38,6 +38,17 @@ service Fleet {
   // notifications.
   rpc AcknowledgeSession(AcknowledgeSessionRequest) returns (google.protobuf.Empty);
 
+  // SoftDeleteSession marks the session deleted but defers tmux kill. The
+  // row is held in a daemon-local tombstone buffer for a short window
+  // (default 30s) and can be brought back via RestoreSession. Powers the
+  // TUI's `z` undo-delete flow when the TUI runs as a daemon client.
+  rpc SoftDeleteSession(SoftDeleteSessionRequest) returns (google.protobuf.Empty);
+
+  // RestoreSession brings back a recently soft-deleted session by ID.
+  // Returns NOT_FOUND if the tombstone has expired or the ID never had
+  // an in-flight soft delete.
+  rpc RestoreSession(RestoreSessionRequest) returns (Session);
+
   // SendKeys sends raw keystrokes to a session's tmux pane. Used for quick
   // approve (Y), mid-flight steering, and any chrome-level action that
   // needs to interact with the running Claude TUI.
@@ -268,6 +279,14 @@ message RenameSessionRequest {
 }
 
 message AcknowledgeSessionRequest {
+  string id = 1;
+}
+
+message SoftDeleteSessionRequest {
+  string id = 1;
+}
+
+message RestoreSessionRequest {
   string id = 1;
 }
 

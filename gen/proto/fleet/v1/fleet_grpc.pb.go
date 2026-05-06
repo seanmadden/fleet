@@ -38,6 +38,8 @@ const (
 	Fleet_RestartSession_FullMethodName     = "/fleet.v1.Fleet/RestartSession"
 	Fleet_RenameSession_FullMethodName      = "/fleet.v1.Fleet/RenameSession"
 	Fleet_AcknowledgeSession_FullMethodName = "/fleet.v1.Fleet/AcknowledgeSession"
+	Fleet_SoftDeleteSession_FullMethodName  = "/fleet.v1.Fleet/SoftDeleteSession"
+	Fleet_RestoreSession_FullMethodName     = "/fleet.v1.Fleet/RestoreSession"
 	Fleet_SendKeys_FullMethodName           = "/fleet.v1.Fleet/SendKeys"
 	Fleet_CapturePane_FullMethodName        = "/fleet.v1.Fleet/CapturePane"
 	Fleet_ListRepos_FullMethodName          = "/fleet.v1.Fleet/ListRepos"
@@ -72,6 +74,15 @@ type FleetClient interface {
 	// in its current state but no longer surfaces in jump-to-attention or
 	// notifications.
 	AcknowledgeSession(ctx context.Context, in *AcknowledgeSessionRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// SoftDeleteSession marks the session deleted but defers tmux kill. The
+	// row is held in a daemon-local tombstone buffer for a short window
+	// (default 30s) and can be brought back via RestoreSession. Powers the
+	// TUI's `z` undo-delete flow when the TUI runs as a daemon client.
+	SoftDeleteSession(ctx context.Context, in *SoftDeleteSessionRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// RestoreSession brings back a recently soft-deleted session by ID.
+	// Returns NOT_FOUND if the tombstone has expired or the ID never had
+	// an in-flight soft delete.
+	RestoreSession(ctx context.Context, in *RestoreSessionRequest, opts ...grpc.CallOption) (*Session, error)
 	// SendKeys sends raw keystrokes to a session's tmux pane. Used for quick
 	// approve (Y), mid-flight steering, and any chrome-level action that
 	// needs to interact with the running Claude TUI.
@@ -184,6 +195,26 @@ func (c *fleetClient) AcknowledgeSession(ctx context.Context, in *AcknowledgeSes
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
 	err := c.cc.Invoke(ctx, Fleet_AcknowledgeSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fleetClient) SoftDeleteSession(ctx context.Context, in *SoftDeleteSessionRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, Fleet_SoftDeleteSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *fleetClient) RestoreSession(ctx context.Context, in *RestoreSessionRequest, opts ...grpc.CallOption) (*Session, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Session)
+	err := c.cc.Invoke(ctx, Fleet_RestoreSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +397,15 @@ type FleetServer interface {
 	// in its current state but no longer surfaces in jump-to-attention or
 	// notifications.
 	AcknowledgeSession(context.Context, *AcknowledgeSessionRequest) (*emptypb.Empty, error)
+	// SoftDeleteSession marks the session deleted but defers tmux kill. The
+	// row is held in a daemon-local tombstone buffer for a short window
+	// (default 30s) and can be brought back via RestoreSession. Powers the
+	// TUI's `z` undo-delete flow when the TUI runs as a daemon client.
+	SoftDeleteSession(context.Context, *SoftDeleteSessionRequest) (*emptypb.Empty, error)
+	// RestoreSession brings back a recently soft-deleted session by ID.
+	// Returns NOT_FOUND if the tombstone has expired or the ID never had
+	// an in-flight soft delete.
+	RestoreSession(context.Context, *RestoreSessionRequest) (*Session, error)
 	// SendKeys sends raw keystrokes to a session's tmux pane. Used for quick
 	// approve (Y), mid-flight steering, and any chrome-level action that
 	// needs to interact with the running Claude TUI.
@@ -425,6 +465,12 @@ func (UnimplementedFleetServer) RenameSession(context.Context, *RenameSessionReq
 }
 func (UnimplementedFleetServer) AcknowledgeSession(context.Context, *AcknowledgeSessionRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method AcknowledgeSession not implemented")
+}
+func (UnimplementedFleetServer) SoftDeleteSession(context.Context, *SoftDeleteSessionRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method SoftDeleteSession not implemented")
+}
+func (UnimplementedFleetServer) RestoreSession(context.Context, *RestoreSessionRequest) (*Session, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestoreSession not implemented")
 }
 func (UnimplementedFleetServer) SendKeys(context.Context, *SendKeysRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method SendKeys not implemented")
@@ -604,6 +650,42 @@ func _Fleet_AcknowledgeSession_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(FleetServer).AcknowledgeSession(ctx, req.(*AcknowledgeSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Fleet_SoftDeleteSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SoftDeleteSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FleetServer).SoftDeleteSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Fleet_SoftDeleteSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FleetServer).SoftDeleteSession(ctx, req.(*SoftDeleteSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Fleet_RestoreSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestoreSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FleetServer).RestoreSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Fleet_RestoreSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FleetServer).RestoreSession(ctx, req.(*RestoreSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -876,6 +958,14 @@ var Fleet_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AcknowledgeSession",
 			Handler:    _Fleet_AcknowledgeSession_Handler,
+		},
+		{
+			MethodName: "SoftDeleteSession",
+			Handler:    _Fleet_SoftDeleteSession_Handler,
+		},
+		{
+			MethodName: "RestoreSession",
+			Handler:    _Fleet_RestoreSession_Handler,
 		},
 		{
 			MethodName: "SendKeys",

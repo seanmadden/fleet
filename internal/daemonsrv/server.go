@@ -2,27 +2,49 @@ package daemonsrv
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	fleetv1 "github.com/brizzai/fleet/gen/proto/fleet/v1"
+	"github.com/brizzai/fleet/internal/debuglog"
 	"github.com/brizzai/fleet/internal/service"
+	"github.com/brizzai/fleet/internal/session"
+	"github.com/brizzai/fleet/internal/tmux"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+// tombstoneTTL is how long a soft-deleted session row sits in the daemon's
+// tombstone buffer before its tmux pane is killed and the row is forgotten.
+// 30s comfortably covers the TUI's 5s undo banner plus latency for the user
+// to reach for `z`.
+const tombstoneTTL = 30 * time.Second
 
 // Server implements fleetv1.FleetServer by routing each RPC into the in-process
 // *service.SessionService. Embedding UnimplementedFleetServer makes every RPC
-// we don't override return codes.Unimplemented automatically — so we can ship
-// the MVP subset (sessions / repos / slots / pins) and fill in SendKeys,
-// CapturePane, Workspace*, Config*, and StreamHookEvents in later PRs without
-// breaking forward compatibility.
+// we don't override return codes.Unimplemented automatically.
 type Server struct {
 	fleetv1.UnimplementedFleetServer
 	svc service.Service
+
+	tombstoneMu sync.Mutex
+	tombstones  map[string]*tombstone
+}
+
+// tombstone holds a soft-deleted session pending undo. The timer kills the
+// stranded tmux pane if undo doesn't fire within tombstoneTTL.
+type tombstone struct {
+	row   *session.SessionRow
+	timer *time.Timer
 }
 
 func NewServer(svc service.Service) *Server {
-	return &Server{svc: svc}
+	return &Server{
+		svc:        svc,
+		tombstones: map[string]*tombstone{},
+	}
 }
 
 // ── Sessions ───────────────────────────────────────────────────────────────
@@ -46,8 +68,7 @@ func (s *Server) CreateSession(_ context.Context, req *fleetv1.CreateSessionRequ
 	if req.GetForkFromId() != "" {
 		// Service.ForkSession takes the *parent's claude session id*, not the
 		// fleet session id. We treat fork_from_id as the parent's claude
-		// session id verbatim per proto field documentation. Mac/TUI clients
-		// are expected to pass the captured Claude session id.
+		// session id verbatim per proto field documentation.
 		s2, err := s.svc.ForkSession(req.GetTitle(), req.GetProjectPath(), req.GetWorkspaceName(), req.GetForkFromId())
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "fork session: %v", err)
@@ -66,10 +87,91 @@ func (s *Server) DeleteSession(_ context.Context, req *fleetv1.DeleteSessionRequ
 	if req.GetId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	// PR 4 ignores DeleteOption (workspace/repo cleanup) and defer_tmux_kill —
-	// undo-delete is TUI-internal today; daemon-driven cleanup is PR 5+.
+	// PR 4 ignored DeleteOption (workspace/repo cleanup) and defer_tmux_kill;
+	// undo-delete now lives behind SoftDeleteSession/RestoreSession instead of
+	// being expressed via the boolean field. Hard delete kills the tmux pane
+	// immediately.
 	s.svc.DeleteSession(req.GetId())
 	return &emptypb.Empty{}, nil
+}
+
+func (s *Server) SoftDeleteSession(_ context.Context, req *fleetv1.SoftDeleteSessionRequest) (*emptypb.Empty, error) {
+	if req.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+
+	row, err := s.svc.SoftDelete(req.GetId())
+	if err != nil {
+		// Service returns "not found" for unknown ids; map to NotFound so the
+		// client can distinguish from transient daemon failures.
+		return nil, status.Errorf(codes.NotFound, "soft delete: %v", err)
+	}
+
+	s.tombstoneMu.Lock()
+	if existing, ok := s.tombstones[req.GetId()]; ok {
+		// Race-safety: a prior tombstone is being evicted by AfterFunc right
+		// now. Stop the old timer so it doesn't kill the pane we're about to
+		// re-stash. Stop returns false if the timer already fired; in that
+		// case the tmux pane is already dead and SoftDelete above couldn't
+		// have actually found the session — so this branch is mostly defensive.
+		existing.timer.Stop()
+	}
+	id := req.GetId()
+	t := &tombstone{row: row}
+	t.timer = time.AfterFunc(tombstoneTTL, func() { s.evictTombstone(id) })
+	s.tombstones[id] = t
+	s.tombstoneMu.Unlock()
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *Server) RestoreSession(_ context.Context, req *fleetv1.RestoreSessionRequest) (*fleetv1.Session, error) {
+	if req.GetId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+
+	s.tombstoneMu.Lock()
+	t, ok := s.tombstones[req.GetId()]
+	if ok {
+		t.timer.Stop()
+		delete(s.tombstones, req.GetId())
+	}
+	s.tombstoneMu.Unlock()
+
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "no recently deleted session %q", req.GetId())
+	}
+
+	if err := s.svc.RestoreDeleted(t.row); err != nil {
+		return nil, status.Errorf(codes.Internal, "restore: %v", err)
+	}
+	sess := s.svc.GetSession(req.GetId())
+	if sess == nil {
+		return nil, status.Errorf(codes.Internal, "restored session %q vanished", req.GetId())
+	}
+	return convertSession(sess), nil
+}
+
+// evictTombstone runs from the AfterFunc timer when the undo window expires.
+// It kills the still-alive tmux pane and forgets the row. Safe to call even
+// if the entry has already been popped by RestoreSession (the map check
+// short-circuits).
+func (s *Server) evictTombstone(id string) {
+	s.tombstoneMu.Lock()
+	t, ok := s.tombstones[id]
+	if ok {
+		delete(s.tombstones, id)
+	}
+	s.tombstoneMu.Unlock()
+	if !ok {
+		return
+	}
+	ts := tmux.ReconnectSession(t.row.TmuxSession, t.row.Title, t.row.ProjectPath)
+	if ts.Exists() {
+		if err := ts.Kill(); err != nil {
+			debuglog.Logger.Warn("tombstone evict: tmux kill failed", "id", id, "err", err)
+		}
+	}
 }
 
 func (s *Server) RestartSession(_ context.Context, req *fleetv1.RestartSessionRequest) (*fleetv1.Session, error) {
@@ -104,6 +206,69 @@ func (s *Server) AcknowledgeSession(_ context.Context, req *fleetv1.AcknowledgeS
 	}
 	s.svc.AcknowledgeSession(req.GetId())
 	return &emptypb.Empty{}, nil
+}
+
+// SendKeys forwards the requested keystrokes to the session's tmux pane.
+// Used by the TUI's quick-approve `Y` and any future steering commands. The
+// daemon does not interpret the keys — it relies on tmux send-keys' own key
+// vocabulary (literal characters, named keys like "Enter", "C-q"…).
+func (s *Server) SendKeys(_ context.Context, req *fleetv1.SendKeysRequest) (*emptypb.Empty, error) {
+	if req.GetSessionId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+	sess := s.svc.GetSession(req.GetSessionId())
+	if sess == nil {
+		return nil, status.Errorf(codes.NotFound, "session %q not found", req.GetSessionId())
+	}
+	ts := sess.GetTmuxSession()
+	if ts == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "session %q has no tmux pane", req.GetSessionId())
+	}
+
+	keys := req.GetKeys()
+	if req.GetSubmit() {
+		keys = append(keys, "Enter")
+	}
+	if len(keys) == 0 {
+		return &emptypb.Empty{}, nil
+	}
+	if err := ts.SendKeys(keys...); err != nil {
+		return nil, status.Errorf(codes.Internal, "send-keys: %v", err)
+	}
+	return &emptypb.Empty{}, nil
+}
+
+// CapturePane returns the current pane content. The TUI's preview pane
+// polls this every ~500ms while a session is selected, so it is a hot RPC
+// — no logging on the success path.
+func (s *Server) CapturePane(_ context.Context, req *fleetv1.CapturePaneRequest) (*fleetv1.CapturePaneResponse, error) {
+	if req.GetSessionId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+	sess := s.svc.GetSession(req.GetSessionId())
+	if sess == nil {
+		return nil, status.Errorf(codes.NotFound, "session %q not found", req.GetSessionId())
+	}
+	ts := sess.GetTmuxSession()
+	if ts == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "session %q has no tmux pane", req.GetSessionId())
+	}
+	content, err := ts.CapturePane()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "capture-pane: %v", err)
+	}
+	if req.GetStripAnsi() {
+		content = session.StripANSI(content)
+	}
+	// req.Lines is intentionally ignored for now: tmux capture-pane returns
+	// the full visible pane (which is the only mode CapturePane() supports);
+	// trimming to N lines client-side is fine for current callers. If a
+	// future caller needs strict line counts we can add a CapturePaneN
+	// variant on tmux.Session.
+	return &fleetv1.CapturePaneResponse{
+		Content:    content,
+		CapturedAt: timestamppb.Now(),
+	}, nil
 }
 
 // ── Repos ──────────────────────────────────────────────────────────────────
@@ -157,7 +322,5 @@ func (s *Server) UnbindSlot(_ context.Context, req *fleetv1.UnbindSlotRequest) (
 	return &emptypb.Empty{}, nil
 }
 
-// Compile-time check that *Server satisfies FleetServer. The embedded
-// UnimplementedFleetServer.mustEmbedUnimplementedFleetServer() satisfies the
-// final unexported method.
+// Compile-time check that *Server satisfies FleetServer.
 var _ fleetv1.FleetServer = (*Server)(nil)

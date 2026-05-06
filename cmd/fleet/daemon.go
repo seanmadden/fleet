@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	fleetv1 "github.com/brizzai/fleet/gen/proto/fleet/v1"
@@ -20,14 +22,31 @@ import (
 	"google.golang.org/grpc/reflection"
 )
 
-// runDaemon serves the fleet gRPC API on a Unix domain socket. Foreground-only
-// for Stage 0 PR 4 — `--detach` and admin subcommands (status/stop) are
-// deferred to PR 5 / Stage 0.5.
+// detachedEnvKey marks the spawned-child half of the --detach re-exec.
+// When set, runDaemon skips the re-exec branch and runs the daemon body
+// directly. The TUI's autospawn path (internal/daemonclient.spawnDetached)
+// also sets this so it doesn't need to know whether the child will fork
+// itself again.
+const detachedEnvKey = "FLEET_DAEMON_DETACHED"
+
+// runDaemon serves the fleet gRPC API on a Unix domain socket. Defaults to
+// foreground; `fleet daemon --detach` re-execs into a Setsid'd child whose
+// stdout/stderr land in ~/.config/fleet/daemon.log so a TUI client can fork
+// it from autospawn and exit cleanly.
 //
-// The TUI is unaffected: it still runs `*service.SessionService` in-process.
-// `fleet daemon` is a parallel runnable that holds the same service shape
-// behind the wire-level contract; PR 5 turns the TUI into a client.
+// The detach handshake uses an env var (FLEET_DAEMON_DETACHED) to mark the
+// child so it doesn't recurse: the parent re-execs with --detach + env set,
+// the child sees the env var and skips the re-exec branch, running the
+// daemon body in the foreground of its own session.
 func runDaemon() {
+	if shouldDetach() {
+		if err := redetach(); err != nil {
+			fmt.Fprintf(os.Stderr, "fleet daemon: failed to detach: %v\n", err)
+			os.Exit(1)
+		}
+		return // parent exits; child has taken over.
+	}
+
 	migration.Run()
 	debuglog.Init()
 	defer debuglog.Close()
@@ -99,4 +118,62 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "gRPC server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// shouldDetach inspects argv for `--detach` and reports whether the current
+// process is the parent half of the re-exec pair. The child sees
+// FLEET_DAEMON_DETACHED=1 in its environment and short-circuits to the
+// daemon body; the parent does not, and proceeds into redetach().
+func shouldDetach() bool {
+	if os.Getenv(detachedEnvKey) == "1" {
+		return false
+	}
+	for _, a := range os.Args[1:] {
+		if a == "--detach" {
+			return true
+		}
+	}
+	return false
+}
+
+// redetach re-execs the current binary with the same args plus the marker
+// env var, redirects stdout/stderr to ~/.config/fleet/daemon.log, and
+// asks the OS to make the child a session leader (Setsid) so it survives
+// the parent's exit. The parent prints the new PID to its own stderr and
+// returns; the child runs runDaemon's body.
+func redetach() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate self binary: %w", err)
+	}
+
+	logPath := filepath.Join(filepath.Dir(daemonsrv.SocketPath()), "daemon.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return fmt.Errorf("mkdir for daemon log: %w", err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("open daemon log %s: %w", logPath, err)
+	}
+	// Don't close logFile in this process — the child inherits the fd
+	// and writes to it for its lifetime. The kernel reaps it on exit.
+
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Stdin = nil
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Env = append(os.Environ(), detachedEnvKey+"=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("start detached daemon: %w", err)
+	}
+	// Detach from the child so we don't leave a zombie when it exits;
+	// we never call cmd.Wait.
+	if rerr := cmd.Process.Release(); rerr != nil {
+		fmt.Fprintf(os.Stderr, "fleet daemon: process release: %v\n", rerr)
+	}
+	fmt.Fprintf(os.Stderr, "fleet daemon: detached (pid %d, log %s)\n", cmd.Process.Pid, logPath)
+	return nil
 }
