@@ -1019,6 +1019,25 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.cursor = NextSelectableItem(h.flatItems, h.cursor, -1)
 		h.syncViewport()
 		return h, h.fetchPreviewForSelected()
+	case "pgdown":
+		target := h.cursor + h.sidebarPanelRows()
+		if target > len(h.flatItems)-1 {
+			target = len(h.flatItems) - 1
+		}
+		if target < 0 {
+			target = 0
+		}
+		h.cursor = target
+		h.syncViewport()
+		return h, h.fetchPreviewForSelected()
+	case "pgup":
+		target := h.cursor - h.sidebarPanelRows()
+		if target < 0 {
+			target = 0
+		}
+		h.cursor = target
+		h.syncViewport()
+		return h, h.fetchPreviewForSelected()
 	case "enter":
 		// Toggle repo group or attach session.
 		if h.cursor >= 0 && h.cursor < len(h.flatItems) && h.flatItems[h.cursor].IsRepoHeader {
@@ -2665,6 +2684,52 @@ func (h *Home) rebuildSessionMap() {
 	}
 }
 
+// sidebarListHeight returns the height of the sidebar panel in the current
+// layout — i.e. the value View() passes to RenderSidebar as `height`, before
+// chrome rows (title + underline) and scroll indicators are subtracted.
+// Stacked mode gives the sidebar ~55% of the content area; single/dual give
+// it the full content area. Mirrors the arithmetic in View() (app.go:794+).
+func (h *Home) sidebarListHeight() int {
+	contentHeight := h.height - 2 - helpBarHeight
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+	if h.layoutMode() == "stacked" {
+		sh := (contentHeight * 55) / 100
+		if sh < 3 {
+			sh = 3
+		}
+		return sh
+	}
+	return contentHeight
+}
+
+// sidebarMinVisibleRows is the conservative lower bound on visible session rows
+// in the sidebar — it assumes both scroll indicators are drawn, so the value
+// holds even mid-scroll. Used by syncViewport to anchor the cursor before
+// RenderSidebar (sidebar.go) decides which indicators to draw.
+// Subtracts panel chrome (title + underline = 2) and reserves 2 rows for the
+// indicators RenderSidebar may add at top/bottom.
+func (h *Home) sidebarMinVisibleRows() int {
+	v := h.sidebarListHeight() - 4
+	if v < 1 {
+		v = 1
+	}
+	return v
+}
+
+// sidebarPanelRows is the actual sidebar panel height in rows, before any
+// scroll indicators are drawn. Used as the PgUp/PgDn page step so a single
+// page-jump moves a full panel; syncViewport handles anchoring if the target
+// would otherwise sit on an indicator row.
+func (h *Home) sidebarPanelRows() int {
+	v := h.sidebarListHeight() - 2
+	if v < 1 {
+		v = 1
+	}
+	return v
+}
+
 func (h *Home) syncViewport() {
 	if len(h.flatItems) == 0 {
 		return
@@ -2676,11 +2741,7 @@ func (h *Home) syncViewport() {
 	if h.cursor >= len(h.flatItems) {
 		h.cursor = len(h.flatItems) - 1
 	}
-	// Calculate visible height for sidebar (subtract title + underline).
-	contentHeight := h.height - 2 - helpBarHeight - 2
-	if contentHeight < 1 {
-		contentHeight = 1
-	}
+	contentHeight := h.sidebarMinVisibleRows()
 	prevOffset := h.viewOffset
 	// Scroll to keep cursor visible.
 	if h.cursor < h.viewOffset {
