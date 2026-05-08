@@ -6,12 +6,40 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             disconnectBanner
+            errorToast
             NavigationSplitView {
                 SidebarView(model: model)
                     .navigationSplitViewColumnWidth(min: 200, ideal: 260, max: 360)
             } detail: {
                 detailPane
             }
+        }
+        .alert("Delete session?",
+               isPresented: deletionBinding,
+               presenting: model.pendingDeletion) { session in
+            Button("Cancel", role: .cancel) { model.pendingDeletion = nil }
+            Button("Delete", role: .destructive) {
+                let id = session.id
+                model.pendingDeletion = nil
+                Task { await model.dispatchDelete(sessionID: id) }
+            }
+        } message: { session in
+            Text("\(session.title) will be removed. The tmux pane is killed.")
+        }
+    }
+
+    private var deletionBinding: Binding<Bool> {
+        Binding(
+            get: { model.pendingDeletion != nil },
+            set: { if !$0 { model.pendingDeletion = nil } }
+        )
+    }
+
+    @ViewBuilder
+    private var errorToast: some View {
+        if let msg = model.errorToast {
+            bannerRow(text: msg, tint: .red)
+                .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
 

@@ -235,6 +235,10 @@ func (s *Server) SendKeys(_ context.Context, req *fleetv1.SendKeysRequest) (*emp
 	if err := ts.SendKeys(keys...); err != nil {
 		return nil, status.Errorf(codes.Internal, "send-keys: %v", err)
 	}
+	// Nudge the status worker so the row reflects the post-send state
+	// without waiting up to a full tick. Hooks usually arrive within a few
+	// hundred ms of the keys landing in the pane.
+	s.svc.TriggerRefresh()
 	return &emptypb.Empty{}, nil
 }
 

@@ -2368,6 +2368,58 @@ func (x *UpdateConfigRequest) GetConfig() *Config {
 	return nil
 }
 
+type DiagnosticsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Markdown      string                 `protobuf:"bytes,1,opt,name=markdown,proto3" json:"markdown,omitempty"`
+	CapturedAt    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=captured_at,json=capturedAt,proto3" json:"captured_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DiagnosticsResponse) Reset() {
+	*x = DiagnosticsResponse{}
+	mi := &file_fleet_v1_fleet_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DiagnosticsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DiagnosticsResponse) ProtoMessage() {}
+
+func (x *DiagnosticsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_fleet_v1_fleet_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DiagnosticsResponse.ProtoReflect.Descriptor instead.
+func (*DiagnosticsResponse) Descriptor() ([]byte, []int) {
+	return file_fleet_v1_fleet_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *DiagnosticsResponse) GetMarkdown() string {
+	if x != nil {
+		return x.Markdown
+	}
+	return ""
+}
+
+func (x *DiagnosticsResponse) GetCapturedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.CapturedAt
+	}
+	return nil
+}
+
 var File_fleet_v1_fleet_proto protoreflect.FileDescriptor
 
 const file_fleet_v1_fleet_proto_rawDesc = "" +
@@ -2525,7 +2577,11 @@ const file_fleet_v1_fleet_proto_rawDesc = "" +
 	"\x17StreamHookEventsRequest\x12*\n" +
 	"\x11session_id_filter\x18\x01 \x01(\tR\x0fsessionIdFilter\"?\n" +
 	"\x13UpdateConfigRequest\x12(\n" +
-	"\x06config\x18\x01 \x01(\v2\x10.fleet.v1.ConfigR\x06config*\x95\x01\n" +
+	"\x06config\x18\x01 \x01(\v2\x10.fleet.v1.ConfigR\x06config\"n\n" +
+	"\x13DiagnosticsResponse\x12\x1a\n" +
+	"\bmarkdown\x18\x01 \x01(\tR\bmarkdown\x12;\n" +
+	"\vcaptured_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"capturedAt*\x95\x01\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vSTATUS_IDLE\x10\x01\x12\x13\n" +
@@ -2558,7 +2614,7 @@ const file_fleet_v1_fleet_proto_rawDesc = "" +
 	"\x19REPO_UPDATE_KIND_SNAPSHOT\x10\x01\x12\x1a\n" +
 	"\x16REPO_UPDATE_KIND_ADDED\x10\x02\x12\x1c\n" +
 	"\x18REPO_UPDATE_KIND_CHANGED\x10\x03\x12\x1c\n" +
-	"\x18REPO_UPDATE_KIND_REMOVED\x10\x042\xee\f\n" +
+	"\x18REPO_UPDATE_KIND_REMOVED\x10\x042\xb7\r\n" +
 	"\x05Fleet\x12H\n" +
 	"\fListSessions\x12\x1d.fleet.v1.ListSessionsRequest\x1a\x17.fleet.v1.SessionUpdate0\x01\x12<\n" +
 	"\n" +
@@ -2584,7 +2640,8 @@ const file_fleet_v1_fleet_proto_rawDesc = "" +
 	"UnbindSlot\x12\x1b.fleet.v1.UnbindSlotRequest\x1a\x16.google.protobuf.Empty\x12L\n" +
 	"\x10StreamHookEvents\x12!.fleet.v1.StreamHookEventsRequest\x1a\x13.fleet.v1.HookEvent0\x01\x125\n" +
 	"\tGetConfig\x12\x16.google.protobuf.Empty\x1a\x10.fleet.v1.Config\x12?\n" +
-	"\fUpdateConfig\x12\x1d.fleet.v1.UpdateConfigRequest\x1a\x10.fleet.v1.ConfigB=Z3github.com/brizzai/fleet/gen/proto/fleet/v1;fleetv1\xba\x02\x05Fleetb\x06proto3"
+	"\fUpdateConfig\x12\x1d.fleet.v1.UpdateConfigRequest\x1a\x10.fleet.v1.Config\x12G\n" +
+	"\x0eGetDiagnostics\x12\x16.google.protobuf.Empty\x1a\x1d.fleet.v1.DiagnosticsResponseB=Z3github.com/brizzai/fleet/gen/proto/fleet/v1;fleetv1\xba\x02\x05Fleetb\x06proto3"
 
 var (
 	file_fleet_v1_fleet_proto_rawDescOnce sync.Once
@@ -2599,7 +2656,7 @@ func file_fleet_v1_fleet_proto_rawDescGZIP() []byte {
 }
 
 var file_fleet_v1_fleet_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_fleet_v1_fleet_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
+var file_fleet_v1_fleet_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_fleet_v1_fleet_proto_goTypes = []any{
 	(Status)(0),                       // 0: fleet.v1.Status
 	(HookKind)(0),                     // 1: fleet.v1.HookKind
@@ -2640,79 +2697,83 @@ var file_fleet_v1_fleet_proto_goTypes = []any{
 	(*UnbindSlotRequest)(nil),         // 36: fleet.v1.UnbindSlotRequest
 	(*StreamHookEventsRequest)(nil),   // 37: fleet.v1.StreamHookEventsRequest
 	(*UpdateConfigRequest)(nil),       // 38: fleet.v1.UpdateConfigRequest
-	(*timestamppb.Timestamp)(nil),     // 39: google.protobuf.Timestamp
-	(*emptypb.Empty)(nil),             // 40: google.protobuf.Empty
+	(*DiagnosticsResponse)(nil),       // 39: fleet.v1.DiagnosticsResponse
+	(*timestamppb.Timestamp)(nil),     // 40: google.protobuf.Timestamp
+	(*emptypb.Empty)(nil),             // 41: google.protobuf.Empty
 }
 var file_fleet_v1_fleet_proto_depIdxs = []int32{
 	0,  // 0: fleet.v1.Session.status:type_name -> fleet.v1.Status
-	39, // 1: fleet.v1.Session.created_at:type_name -> google.protobuf.Timestamp
-	39, // 2: fleet.v1.Session.last_accessed_at:type_name -> google.protobuf.Timestamp
+	40, // 1: fleet.v1.Session.created_at:type_name -> google.protobuf.Timestamp
+	40, // 2: fleet.v1.Session.last_accessed_at:type_name -> google.protobuf.Timestamp
 	7,  // 3: fleet.v1.Repo.pr:type_name -> fleet.v1.PR
-	39, // 4: fleet.v1.Repo.last_git_refresh:type_name -> google.protobuf.Timestamp
-	39, // 5: fleet.v1.Repo.last_pr_refresh:type_name -> google.protobuf.Timestamp
+	40, // 4: fleet.v1.Repo.last_git_refresh:type_name -> google.protobuf.Timestamp
+	40, // 5: fleet.v1.Repo.last_pr_refresh:type_name -> google.protobuf.Timestamp
 	1,  // 6: fleet.v1.HookEvent.kind:type_name -> fleet.v1.HookKind
-	39, // 7: fleet.v1.HookEvent.at:type_name -> google.protobuf.Timestamp
+	40, // 7: fleet.v1.HookEvent.at:type_name -> google.protobuf.Timestamp
 	3,  // 8: fleet.v1.SessionUpdate.kind:type_name -> fleet.v1.SessionUpdateKind
 	5,  // 9: fleet.v1.SessionUpdate.session:type_name -> fleet.v1.Session
 	2,  // 10: fleet.v1.DeleteSessionRequest.option:type_name -> fleet.v1.DeleteOption
-	39, // 11: fleet.v1.CapturePaneResponse.captured_at:type_name -> google.protobuf.Timestamp
+	40, // 11: fleet.v1.CapturePaneResponse.captured_at:type_name -> google.protobuf.Timestamp
 	4,  // 12: fleet.v1.RepoUpdate.kind:type_name -> fleet.v1.RepoUpdateKind
 	6,  // 13: fleet.v1.RepoUpdate.repo:type_name -> fleet.v1.Repo
 	8,  // 14: fleet.v1.ListWorkspacesResponse.workspaces:type_name -> fleet.v1.Workspace
 	8,  // 15: fleet.v1.CreateWorkspaceResponse.workspace:type_name -> fleet.v1.Workspace
 	9,  // 16: fleet.v1.ListSlotBindingsResponse.bindings:type_name -> fleet.v1.SlotBinding
 	11, // 17: fleet.v1.UpdateConfigRequest.config:type_name -> fleet.v1.Config
-	12, // 18: fleet.v1.Fleet.ListSessions:input_type -> fleet.v1.ListSessionsRequest
-	14, // 19: fleet.v1.Fleet.GetSession:input_type -> fleet.v1.GetSessionRequest
-	15, // 20: fleet.v1.Fleet.CreateSession:input_type -> fleet.v1.CreateSessionRequest
-	16, // 21: fleet.v1.Fleet.DeleteSession:input_type -> fleet.v1.DeleteSessionRequest
-	17, // 22: fleet.v1.Fleet.RestartSession:input_type -> fleet.v1.RestartSessionRequest
-	18, // 23: fleet.v1.Fleet.RenameSession:input_type -> fleet.v1.RenameSessionRequest
-	19, // 24: fleet.v1.Fleet.AcknowledgeSession:input_type -> fleet.v1.AcknowledgeSessionRequest
-	20, // 25: fleet.v1.Fleet.SoftDeleteSession:input_type -> fleet.v1.SoftDeleteSessionRequest
-	21, // 26: fleet.v1.Fleet.RestoreSession:input_type -> fleet.v1.RestoreSessionRequest
-	22, // 27: fleet.v1.Fleet.SendKeys:input_type -> fleet.v1.SendKeysRequest
-	23, // 28: fleet.v1.Fleet.CapturePane:input_type -> fleet.v1.CapturePaneRequest
-	25, // 29: fleet.v1.Fleet.ListRepos:input_type -> fleet.v1.ListReposRequest
-	27, // 30: fleet.v1.Fleet.PinRepo:input_type -> fleet.v1.PinRepoRequest
-	28, // 31: fleet.v1.Fleet.UnpinRepo:input_type -> fleet.v1.UnpinRepoRequest
-	29, // 32: fleet.v1.Fleet.ListWorkspaces:input_type -> fleet.v1.ListWorkspacesRequest
-	31, // 33: fleet.v1.Fleet.CreateWorkspace:input_type -> fleet.v1.CreateWorkspaceRequest
-	33, // 34: fleet.v1.Fleet.DestroyWorkspace:input_type -> fleet.v1.DestroyWorkspaceRequest
-	40, // 35: fleet.v1.Fleet.ListSlotBindings:input_type -> google.protobuf.Empty
-	35, // 36: fleet.v1.Fleet.BindSlot:input_type -> fleet.v1.BindSlotRequest
-	36, // 37: fleet.v1.Fleet.UnbindSlot:input_type -> fleet.v1.UnbindSlotRequest
-	37, // 38: fleet.v1.Fleet.StreamHookEvents:input_type -> fleet.v1.StreamHookEventsRequest
-	40, // 39: fleet.v1.Fleet.GetConfig:input_type -> google.protobuf.Empty
-	38, // 40: fleet.v1.Fleet.UpdateConfig:input_type -> fleet.v1.UpdateConfigRequest
-	13, // 41: fleet.v1.Fleet.ListSessions:output_type -> fleet.v1.SessionUpdate
-	5,  // 42: fleet.v1.Fleet.GetSession:output_type -> fleet.v1.Session
-	5,  // 43: fleet.v1.Fleet.CreateSession:output_type -> fleet.v1.Session
-	40, // 44: fleet.v1.Fleet.DeleteSession:output_type -> google.protobuf.Empty
-	5,  // 45: fleet.v1.Fleet.RestartSession:output_type -> fleet.v1.Session
-	5,  // 46: fleet.v1.Fleet.RenameSession:output_type -> fleet.v1.Session
-	40, // 47: fleet.v1.Fleet.AcknowledgeSession:output_type -> google.protobuf.Empty
-	40, // 48: fleet.v1.Fleet.SoftDeleteSession:output_type -> google.protobuf.Empty
-	5,  // 49: fleet.v1.Fleet.RestoreSession:output_type -> fleet.v1.Session
-	40, // 50: fleet.v1.Fleet.SendKeys:output_type -> google.protobuf.Empty
-	24, // 51: fleet.v1.Fleet.CapturePane:output_type -> fleet.v1.CapturePaneResponse
-	26, // 52: fleet.v1.Fleet.ListRepos:output_type -> fleet.v1.RepoUpdate
-	40, // 53: fleet.v1.Fleet.PinRepo:output_type -> google.protobuf.Empty
-	40, // 54: fleet.v1.Fleet.UnpinRepo:output_type -> google.protobuf.Empty
-	30, // 55: fleet.v1.Fleet.ListWorkspaces:output_type -> fleet.v1.ListWorkspacesResponse
-	32, // 56: fleet.v1.Fleet.CreateWorkspace:output_type -> fleet.v1.CreateWorkspaceResponse
-	40, // 57: fleet.v1.Fleet.DestroyWorkspace:output_type -> google.protobuf.Empty
-	34, // 58: fleet.v1.Fleet.ListSlotBindings:output_type -> fleet.v1.ListSlotBindingsResponse
-	40, // 59: fleet.v1.Fleet.BindSlot:output_type -> google.protobuf.Empty
-	40, // 60: fleet.v1.Fleet.UnbindSlot:output_type -> google.protobuf.Empty
-	10, // 61: fleet.v1.Fleet.StreamHookEvents:output_type -> fleet.v1.HookEvent
-	11, // 62: fleet.v1.Fleet.GetConfig:output_type -> fleet.v1.Config
-	11, // 63: fleet.v1.Fleet.UpdateConfig:output_type -> fleet.v1.Config
-	41, // [41:64] is the sub-list for method output_type
-	18, // [18:41] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	40, // 18: fleet.v1.DiagnosticsResponse.captured_at:type_name -> google.protobuf.Timestamp
+	12, // 19: fleet.v1.Fleet.ListSessions:input_type -> fleet.v1.ListSessionsRequest
+	14, // 20: fleet.v1.Fleet.GetSession:input_type -> fleet.v1.GetSessionRequest
+	15, // 21: fleet.v1.Fleet.CreateSession:input_type -> fleet.v1.CreateSessionRequest
+	16, // 22: fleet.v1.Fleet.DeleteSession:input_type -> fleet.v1.DeleteSessionRequest
+	17, // 23: fleet.v1.Fleet.RestartSession:input_type -> fleet.v1.RestartSessionRequest
+	18, // 24: fleet.v1.Fleet.RenameSession:input_type -> fleet.v1.RenameSessionRequest
+	19, // 25: fleet.v1.Fleet.AcknowledgeSession:input_type -> fleet.v1.AcknowledgeSessionRequest
+	20, // 26: fleet.v1.Fleet.SoftDeleteSession:input_type -> fleet.v1.SoftDeleteSessionRequest
+	21, // 27: fleet.v1.Fleet.RestoreSession:input_type -> fleet.v1.RestoreSessionRequest
+	22, // 28: fleet.v1.Fleet.SendKeys:input_type -> fleet.v1.SendKeysRequest
+	23, // 29: fleet.v1.Fleet.CapturePane:input_type -> fleet.v1.CapturePaneRequest
+	25, // 30: fleet.v1.Fleet.ListRepos:input_type -> fleet.v1.ListReposRequest
+	27, // 31: fleet.v1.Fleet.PinRepo:input_type -> fleet.v1.PinRepoRequest
+	28, // 32: fleet.v1.Fleet.UnpinRepo:input_type -> fleet.v1.UnpinRepoRequest
+	29, // 33: fleet.v1.Fleet.ListWorkspaces:input_type -> fleet.v1.ListWorkspacesRequest
+	31, // 34: fleet.v1.Fleet.CreateWorkspace:input_type -> fleet.v1.CreateWorkspaceRequest
+	33, // 35: fleet.v1.Fleet.DestroyWorkspace:input_type -> fleet.v1.DestroyWorkspaceRequest
+	41, // 36: fleet.v1.Fleet.ListSlotBindings:input_type -> google.protobuf.Empty
+	35, // 37: fleet.v1.Fleet.BindSlot:input_type -> fleet.v1.BindSlotRequest
+	36, // 38: fleet.v1.Fleet.UnbindSlot:input_type -> fleet.v1.UnbindSlotRequest
+	37, // 39: fleet.v1.Fleet.StreamHookEvents:input_type -> fleet.v1.StreamHookEventsRequest
+	41, // 40: fleet.v1.Fleet.GetConfig:input_type -> google.protobuf.Empty
+	38, // 41: fleet.v1.Fleet.UpdateConfig:input_type -> fleet.v1.UpdateConfigRequest
+	41, // 42: fleet.v1.Fleet.GetDiagnostics:input_type -> google.protobuf.Empty
+	13, // 43: fleet.v1.Fleet.ListSessions:output_type -> fleet.v1.SessionUpdate
+	5,  // 44: fleet.v1.Fleet.GetSession:output_type -> fleet.v1.Session
+	5,  // 45: fleet.v1.Fleet.CreateSession:output_type -> fleet.v1.Session
+	41, // 46: fleet.v1.Fleet.DeleteSession:output_type -> google.protobuf.Empty
+	5,  // 47: fleet.v1.Fleet.RestartSession:output_type -> fleet.v1.Session
+	5,  // 48: fleet.v1.Fleet.RenameSession:output_type -> fleet.v1.Session
+	41, // 49: fleet.v1.Fleet.AcknowledgeSession:output_type -> google.protobuf.Empty
+	41, // 50: fleet.v1.Fleet.SoftDeleteSession:output_type -> google.protobuf.Empty
+	5,  // 51: fleet.v1.Fleet.RestoreSession:output_type -> fleet.v1.Session
+	41, // 52: fleet.v1.Fleet.SendKeys:output_type -> google.protobuf.Empty
+	24, // 53: fleet.v1.Fleet.CapturePane:output_type -> fleet.v1.CapturePaneResponse
+	26, // 54: fleet.v1.Fleet.ListRepos:output_type -> fleet.v1.RepoUpdate
+	41, // 55: fleet.v1.Fleet.PinRepo:output_type -> google.protobuf.Empty
+	41, // 56: fleet.v1.Fleet.UnpinRepo:output_type -> google.protobuf.Empty
+	30, // 57: fleet.v1.Fleet.ListWorkspaces:output_type -> fleet.v1.ListWorkspacesResponse
+	32, // 58: fleet.v1.Fleet.CreateWorkspace:output_type -> fleet.v1.CreateWorkspaceResponse
+	41, // 59: fleet.v1.Fleet.DestroyWorkspace:output_type -> google.protobuf.Empty
+	34, // 60: fleet.v1.Fleet.ListSlotBindings:output_type -> fleet.v1.ListSlotBindingsResponse
+	41, // 61: fleet.v1.Fleet.BindSlot:output_type -> google.protobuf.Empty
+	41, // 62: fleet.v1.Fleet.UnbindSlot:output_type -> google.protobuf.Empty
+	10, // 63: fleet.v1.Fleet.StreamHookEvents:output_type -> fleet.v1.HookEvent
+	11, // 64: fleet.v1.Fleet.GetConfig:output_type -> fleet.v1.Config
+	11, // 65: fleet.v1.Fleet.UpdateConfig:output_type -> fleet.v1.Config
+	39, // 66: fleet.v1.Fleet.GetDiagnostics:output_type -> fleet.v1.DiagnosticsResponse
+	43, // [43:67] is the sub-list for method output_type
+	19, // [19:43] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_fleet_v1_fleet_proto_init() }
@@ -2726,7 +2787,7 @@ func file_fleet_v1_fleet_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_fleet_v1_fleet_proto_rawDesc), len(file_fleet_v1_fleet_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   34,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

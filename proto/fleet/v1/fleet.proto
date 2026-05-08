@@ -86,6 +86,14 @@ service Fleet {
   rpc GetConfig(google.protobuf.Empty) returns (Config);
   rpc UpdateConfig(UpdateConfigRequest) returns (Config);
 
+  // ── Diagnostics ────────────────────────────────────────────────────────
+  // GetDiagnostics returns a status-detection-focused snapshot rendered as
+  // markdown. Used by the Mac app's Cmd-Shift-D hotkey to capture state
+  // when timing feels off and dump it to ~/.config/fleet/snapshots/. The
+  // markdown shape is human-readable and intentionally not stable — it
+  // changes as the daemon evolves.
+  rpc GetDiagnostics(google.protobuf.Empty) returns (DiagnosticsResponse);
+
   // ── V2 RPCs (placeholders, not implemented in V1) ──────────────────────
   // rpc GetWorkspaceDiff(GetWorkspaceDiffRequest) returns (stream DiffChunk);
   // rpc GetSessionStats(GetSessionStatsRequest) returns (SessionStats);
@@ -379,4 +387,9 @@ message UpdateConfigRequest {
   Config config = 1;
   // Field mask is overkill for V1; clients send the full config.
   // Daemon may reject malformed configs (returns INVALID_ARGUMENT).
+}
+
+message DiagnosticsResponse {
+  string markdown = 1;
+  google.protobuf.Timestamp captured_at = 2;
 }

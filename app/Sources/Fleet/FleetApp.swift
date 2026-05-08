@@ -15,6 +15,7 @@ struct FleetApp: App {
                 }
         }
         .windowStyle(.titleBar)
+        .commands { FleetCommands(model: model) }
     }
 }
 

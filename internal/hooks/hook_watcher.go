@@ -35,9 +35,27 @@ type HookWatcher struct {
 
 	onChange chan struct{} // buffered(1), notifies when any status changes
 
+	// Ring buffer of recent fsnotify-driven events; consumed by GetDiagnostics
+	// so a snapshot can answer "did the daemon even see the hook fire?".
+	eventLog   []HookEventLogEntry
+	eventLogMu sync.Mutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
+
+// HookEventLogEntry records one processed hook status file write — captured
+// after the fsnotify debounce so the timestamp matches when the daemon
+// actually picked it up, not when fsnotify fired.
+type HookEventLogEntry struct {
+	At         time.Time
+	InstanceID string
+	Status     string
+	Event      string
+	FileMTime  time.Time // for measuring debounce/processing lag
+}
+
+const hookEventLogSize = 100
 
 // GetHooksDir returns the path to the hooks status directory.
 func GetHooksDir() string {
@@ -205,9 +223,36 @@ func (w *HookWatcher) processFile(filePath string) {
 	w.statuses[instanceID] = hookStatus
 	w.mu.Unlock()
 
+	w.recordEvent(HookEventLogEntry{
+		At:         time.Now(),
+		InstanceID: instanceID,
+		Status:     sf.Status,
+		Event:      sf.Event,
+		FileMTime:  time.Unix(sf.Timestamp, 0),
+	})
+
 	// Notify listeners of the change (non-blocking).
 	select {
 	case w.onChange <- struct{}{}:
 	default:
 	}
+}
+
+func (w *HookWatcher) recordEvent(e HookEventLogEntry) {
+	w.eventLogMu.Lock()
+	defer w.eventLogMu.Unlock()
+	w.eventLog = append(w.eventLog, e)
+	if len(w.eventLog) > hookEventLogSize {
+		w.eventLog = w.eventLog[len(w.eventLog)-hookEventLogSize:]
+	}
+}
+
+// EventLog returns a snapshot of recent fsnotify-driven hook events
+// (oldest first). Used by GetDiagnostics for status-detection debugging.
+func (w *HookWatcher) EventLog() []HookEventLogEntry {
+	w.eventLogMu.Lock()
+	defer w.eventLogMu.Unlock()
+	out := make([]HookEventLogEntry, len(w.eventLog))
+	copy(out, w.eventLog)
+	return out
 }

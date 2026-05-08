@@ -65,7 +65,7 @@ func isolateLiveTmux(t *testing.T) {
 // CRITICAL: isolate every service test from the user's live tmux server.
 //
 // Even though we don't call Start() here, tests like
-// TestStatusWorkerCycle_AutoNamesFromFirstPrompt call s.statusWorkerCycle()
+// TestStatusWorkerCycle_AutoNamesFromFirstPrompt call s.statusWorkerCycle(false)
 // directly, which at service.go:629 invokes tmux.RefreshSessionCache() —
 // shelling out `tmux list-windows -a`. Without isolation, that subprocess
 // hits the user's live tmux server (the same server hosting fleet sessions
@@ -368,7 +368,7 @@ func TestStatusWorkerCycle_AutoNamesFromFirstPrompt(t *testing.T) {
 	}
 	seedSession(t, s, row)
 
-	s.statusWorkerCycle()
+	s.statusWorkerCycle(false)
 
 	sess := s.GetSession("auto")
 	if sess == nil {
@@ -387,7 +387,7 @@ func TestStatusWorkerCycle_AutoNamesFromFirstPrompt(t *testing.T) {
 
 	// Second cycle shouldn't change the title (TitleGenerated locks it).
 	titleAfterFirst := sess.Title
-	s.statusWorkerCycle()
+	s.statusWorkerCycle(false)
 	if sess.Title != titleAfterFirst {
 		t.Errorf("second cycle re-titled: want %q, got %q", titleAfterFirst, sess.Title)
 	}

@@ -320,6 +320,19 @@ public enum FleetFleet: Sendable {
                 type: .unary
             )
         }
+        /// Namespace for "GetDiagnostics" metadata.
+        public enum GetDiagnostics: Sendable {
+            /// Request type for "GetDiagnostics".
+            public typealias Input = SwiftProtobuf.Google_Protobuf_Empty
+            /// Response type for "GetDiagnostics".
+            public typealias Output = FleetDiagnosticsResponse
+            /// Descriptor for "GetDiagnostics".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "fleet.v1.Fleet"),
+                method: "GetDiagnostics",
+                type: .unary
+            )
+        }
         /// Descriptors for all methods in the "fleet.v1.Fleet" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             ListSessions.descriptor,
@@ -344,7 +357,8 @@ public enum FleetFleet: Sendable {
             UnbindSlot.descriptor,
             StreamHookEvents.descriptor,
             GetConfig.descriptor,
-            UpdateConfig.descriptor
+            UpdateConfig.descriptor,
+            GetDiagnostics.descriptor
         ]
     }
 }
@@ -861,6 +875,34 @@ extension FleetFleet {
             deserializer: some GRPCCore.MessageDeserializer<FleetConfig>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<FleetConfig>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "GetDiagnostics" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ── Diagnostics ────────────────────────────────────────────────────────
+        /// > GetDiagnostics returns a status-detection-focused snapshot rendered as
+        /// > markdown. Used by the Mac app's Cmd-Shift-D hotkey to capture state
+        /// > when timing feels off and dump it to ~/.config/fleet/snapshots/. The
+        /// > markdown shape is human-readable and intentionally not stable — it
+        /// > changes as the daemon evolves.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `SwiftProtobuf.Google_Protobuf_Empty` message.
+        ///   - serializer: A serializer for `SwiftProtobuf.Google_Protobuf_Empty` messages.
+        ///   - deserializer: A deserializer for `FleetDiagnosticsResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func getDiagnostics<Result>(
+            request: GRPCCore.ClientRequest<SwiftProtobuf.Google_Protobuf_Empty>,
+            serializer: some GRPCCore.MessageSerializer<SwiftProtobuf.Google_Protobuf_Empty>,
+            deserializer: some GRPCCore.MessageDeserializer<FleetDiagnosticsResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<FleetDiagnosticsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -1625,6 +1667,45 @@ extension FleetFleet {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "GetDiagnostics" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ── Diagnostics ────────────────────────────────────────────────────────
+        /// > GetDiagnostics returns a status-detection-focused snapshot rendered as
+        /// > markdown. Used by the Mac app's Cmd-Shift-D hotkey to capture state
+        /// > when timing feels off and dump it to ~/.config/fleet/snapshots/. The
+        /// > markdown shape is human-readable and intentionally not stable — it
+        /// > changes as the daemon evolves.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `SwiftProtobuf.Google_Protobuf_Empty` message.
+        ///   - serializer: A serializer for `SwiftProtobuf.Google_Protobuf_Empty` messages.
+        ///   - deserializer: A deserializer for `FleetDiagnosticsResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func getDiagnostics<Result>(
+            request: GRPCCore.ClientRequest<SwiftProtobuf.Google_Protobuf_Empty>,
+            serializer: some GRPCCore.MessageSerializer<SwiftProtobuf.Google_Protobuf_Empty>,
+            deserializer: some GRPCCore.MessageDeserializer<FleetDiagnosticsResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<FleetDiagnosticsResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: FleetFleet.Method.GetDiagnostics.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -2257,6 +2338,40 @@ extension FleetFleet.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<FleetUpdateConfigRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<FleetConfig>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetDiagnostics" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ── Diagnostics ────────────────────────────────────────────────────────
+    /// > GetDiagnostics returns a status-detection-focused snapshot rendered as
+    /// > markdown. Used by the Mac app's Cmd-Shift-D hotkey to capture state
+    /// > when timing feels off and dump it to ~/.config/fleet/snapshots/. The
+    /// > markdown shape is human-readable and intentionally not stable — it
+    /// > changes as the daemon evolves.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `SwiftProtobuf.Google_Protobuf_Empty` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getDiagnostics<Result>(
+        request: GRPCCore.ClientRequest<SwiftProtobuf.Google_Protobuf_Empty>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<FleetDiagnosticsResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.getDiagnostics(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<SwiftProtobuf.Google_Protobuf_Empty>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<FleetDiagnosticsResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -2983,6 +3098,44 @@ extension FleetFleet.ClientProtocol {
             metadata: metadata
         )
         return try await self.updateConfig(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetDiagnostics" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ── Diagnostics ────────────────────────────────────────────────────────
+    /// > GetDiagnostics returns a status-detection-focused snapshot rendered as
+    /// > markdown. Used by the Mac app's Cmd-Shift-D hotkey to capture state
+    /// > when timing feels off and dump it to ~/.config/fleet/snapshots/. The
+    /// > markdown shape is human-readable and intentionally not stable — it
+    /// > changes as the daemon evolves.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getDiagnostics<Result>(
+        _ message: SwiftProtobuf.Google_Protobuf_Empty,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<FleetDiagnosticsResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<SwiftProtobuf.Google_Protobuf_Empty>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.getDiagnostics(
             request: request,
             options: options,
             onResponse: handleResponse

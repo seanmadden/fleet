@@ -48,6 +48,7 @@ type SessionService struct {
 
 	// Background worker.
 	statusTrigger         chan struct{}
+	fastTrigger           chan struct{} // hook-watcher path: fast cycle only
 	priorityStatusUpdates chan string
 	statusRRIndex         int
 	gitRRIndex            int
@@ -58,6 +59,48 @@ type SessionService struct {
 	// Observers.
 	observerMu sync.RWMutex
 	observers  []Observer
+
+	// Diagnostics ring buffers — populated by the worker, read by
+	// GetDiagnostics. Both bounded; cheap enough to update on every cycle.
+	diagMu        sync.Mutex
+	cycleLog      []CycleLogEntry
+	transitionLog []StatusTransitionEntry
+}
+
+// CycleLogEntry records one statusWorkerCycle / repoWorkerCycle invocation.
+type CycleLogEntry struct {
+	StartedAt          time.Time
+	Kind               string // "fast" | "full" | "repo"
+	Duration           time.Duration
+	PriorityCount      int
+	RoundRobinCount    int
+	StatusChangedCount int
+	HookSyncedCount    int
+}
+
+// StatusTransitionEntry records a session status change observed by the
+// worker. Source & reason are best-effort human strings so a snapshot can
+// answer "why did this row sit in waiting for 5 seconds".
+type StatusTransitionEntry struct {
+	At        time.Time
+	SessionID string
+	Title     string
+	Old       string
+	New       string
+	Source    string // "hook" | "pane" | "override"
+	Reason    string
+}
+
+const (
+	cycleLogSize      = 100
+	transitionLogSize = 200
+)
+
+func cycleKind(fast bool) string {
+	if fast {
+		return "fast"
+	}
+	return "full"
 }
 
 // NewSessionService creates a service. Start() must be called before the
@@ -72,6 +115,7 @@ func NewSessionService(storage *session.StateDB, cfg *config.Config) *SessionSer
 		slotBindings:          make(map[int]string),
 		pinnedRepos:           make(map[string]bool),
 		statusTrigger:         make(chan struct{}, 1),
+		fastTrigger:           make(chan struct{}, 1),
 		priorityStatusUpdates: make(chan string, 256),
 		ctx:                   ctx,
 		cancel:                cancel,
@@ -161,6 +205,24 @@ func (s *SessionService) Start() (warning string, err error) {
 	if watcher, werr := hooks.NewHookWatcher(); werr == nil {
 		s.hookWatcher = watcher
 		go watcher.Start()
+		// Forward hook fsnotify events into the status worker on the fast
+		// path: do hook sync + priority pane scan only, skipping the
+		// round-robin and git/PR refresh blocks. This keeps hook-driven
+		// status changes reflecting in tens-to-hundreds of ms even when a
+		// regular cycle is mid-flight on a slow `gh pr view`.
+		go func(ch <-chan struct{}) {
+			for {
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-ch:
+					select {
+					case s.fastTrigger <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}(watcher.Changes())
 	} else {
 		debuglog.Logger.Warn("hook watcher: init failed", "err", werr)
 	}
@@ -168,6 +230,8 @@ func (s *SessionService) Start() (warning string, err error) {
 	if !s.workerStarted {
 		s.workerStarted = true
 		go s.statusWorker()
+		go s.fastWorker()
+		go s.repoWorker()
 	}
 	return warning, nil
 }
@@ -186,6 +250,62 @@ func (s *SessionService) TriggerRefresh() {
 	case s.statusTrigger <- struct{}{}:
 	default:
 	}
+}
+
+// recordCycle stores a worker cycle entry in the bounded ring buffer.
+func (s *SessionService) recordCycle(e CycleLogEntry) {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	s.cycleLog = append(s.cycleLog, e)
+	if len(s.cycleLog) > cycleLogSize {
+		s.cycleLog = s.cycleLog[len(s.cycleLog)-cycleLogSize:]
+	}
+}
+
+// recordTransition stores a session status change entry. Source describes
+// where the new status came from ("hook", "pane", "override").
+func (s *SessionService) recordTransition(e StatusTransitionEntry) {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	s.transitionLog = append(s.transitionLog, e)
+	if len(s.transitionLog) > transitionLogSize {
+		s.transitionLog = s.transitionLog[len(s.transitionLog)-transitionLogSize:]
+	}
+}
+
+// CycleLog returns a snapshot of the worker cycle ring buffer, oldest first.
+func (s *SessionService) CycleLog() []CycleLogEntry {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	out := make([]CycleLogEntry, len(s.cycleLog))
+	copy(out, s.cycleLog)
+	return out
+}
+
+// TransitionLog returns a snapshot of the status transition ring buffer.
+func (s *SessionService) TransitionLog() []StatusTransitionEntry {
+	s.diagMu.Lock()
+	defer s.diagMu.Unlock()
+	out := make([]StatusTransitionEntry, len(s.transitionLog))
+	copy(out, s.transitionLog)
+	return out
+}
+
+// HookWatcher exposes the hooks watcher for diagnostics consumers (the
+// daemonsrv GetDiagnostics handler). Returns nil if init failed.
+func (s *SessionService) HookWatcher() *hooks.HookWatcher {
+	return s.hookWatcher
+}
+
+// GitInfoCache returns a copy of the cached git info for diagnostics.
+func (s *SessionService) GitInfoCache() map[string]*git.RepoInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]*git.RepoInfo, len(s.gitInfoCache))
+	for k, v := range s.gitInfoCache {
+		out[k] = v
+	}
+	return out
 }
 
 // EnqueuePriority requests a priority pane scan for a session at the next
@@ -615,15 +735,42 @@ func (s *SessionService) statusWorker() {
 		case <-s.statusTrigger:
 		case <-ticker.C:
 		}
-		s.statusWorkerCycle()
+		s.statusWorkerCycle(false)
 	}
 }
 
-func (s *SessionService) statusWorkerCycle() {
+// fastWorker handles hook-watcher events on a dedicated goroutine. Without
+// this, fastTrigger events queued behind a slow full cycle (e.g. one
+// running `gh pr view`) and inherited its latency. Now hook-driven status
+// updates land in tens-of-ms regardless of what the full worker is doing.
+func (s *SessionService) fastWorker() {
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-s.fastTrigger:
+			s.statusWorkerCycle(true)
+		}
+	}
+}
+
+// statusWorkerCycle runs one pass of session status maintenance. When
+// `fast` is true (hook-watcher path), only the hook sync + priority pane
+// scan + early notify are executed — the round-robin, auto-name, and git/PR
+// refresh blocks are skipped so hook-driven status changes propagate to
+// observers without being gated on a slow `gh pr view`.
+func (s *SessionService) statusWorkerCycle(fast bool) {
+	startedAt := time.Now()
+	cycleEntry := CycleLogEntry{
+		StartedAt: startedAt,
+		Kind:      cycleKind(fast),
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			debuglog.Logger.Error("statusWorkerCycle panic recovered", "panic", r)
 		}
+		cycleEntry.Duration = time.Since(startedAt)
+		s.recordCycle(cycleEntry)
 	}()
 
 	tmux.RefreshSessionCache()
@@ -638,18 +785,23 @@ func (s *SessionService) statusWorkerCycle() {
 	}
 
 	// Hook sync: merge hook-derived state, persist drift, enqueue any session
-	// whose status changed for the priority pane scan below.
+	// whose hook fields changed for the priority pane scan below. We key on
+	// `UpdateHookStatus`'s return value (true when hook status/timestamp
+	// shifted) — NOT on `sess.Status`, because UpdateHookStatus only stores
+	// hook fields; the actual session status flip happens later inside
+	// `UpdateStatus()` from the priority drain. Without this hook-aware
+	// enqueue, hook-driven changes had to wait for the round-robin index to
+	// reach the session, which was the source of the unstable 0-13s lag.
 	if s.hookWatcher != nil {
 		for _, sess := range sessions {
 			hs := s.hookWatcher.GetStatus(sess.ID)
 			if hs == nil {
 				continue
 			}
-			oldStatus := sess.GetStatus()
 			oldClaudeSessionID := sess.ClaudeSessionID
 			oldFirstPrompt := sess.FirstPrompt
 			oldPromptCount := sess.PromptCount
-			sess.UpdateHookStatus(&session.HookStatus{
+			hookChanged := sess.UpdateHookStatus(&session.HookStatus{
 				Status:      hs.Status,
 				SessionID:   hs.SessionID,
 				UpdatedAt:   hs.UpdatedAt,
@@ -669,7 +821,8 @@ func (s *SessionService) statusWorkerCycle() {
 			if sess.FirstPrompt != "" && sess.FirstPrompt != oldFirstPrompt {
 				_ = s.storage.UpdateFirstPrompt(sess.ID, sess.FirstPrompt)
 			}
-			if sess.GetStatus() != oldStatus {
+			if hookChanged {
+				cycleEntry.HookSyncedCount++
 				select {
 				case s.priorityStatusUpdates <- sess.ID:
 				default:
@@ -678,10 +831,9 @@ func (s *SessionService) statusWorkerCycle() {
 		}
 	}
 
-	// Auto-name: one session per cycle. Mirrors the UI worker that this
-	// service replaces (legacy app.go:2246-2290): Claude's JSONL-derived
-	// session name takes priority, falling back to the prompt heuristic.
-	if s.cfg.IsAutoNameEnabled() {
+	// Auto-name reads JSONL files; skip on the fast path so hook events
+	// don't pay that cost.
+	if !fast && s.cfg.IsAutoNameEnabled() {
 		for _, sess := range sessions {
 			if sess.ManuallyRenamed {
 				continue
@@ -730,64 +882,171 @@ drainPriority:
 		if !priorityIDs[sess.ID] {
 			continue
 		}
-		s.updateAndPersistStatus(sess)
+		cycleEntry.PriorityCount++
+		if s.updateAndPersistStatus(sess, "priority") {
+			cycleEntry.StatusChangedCount++
+		}
 		processed[sess.ID] = true
 	}
 
-	// Round-robin pane scan (skipping already-processed priority sessions).
-	count := statusRoundRobin
-	if count > len(sessions) {
-		count = len(sessions)
+	// Early notify: hook-driven status changes are now applied + corroborated
+	// against the pane. Fire before the round-robin / git / `gh pr view` block
+	// below so subscribers (Mac app, TUI) reflect the new status without
+	// waiting on the much slower git/PR refresh path.
+	if len(priorityIDs) > 0 {
+		s.notify(Event{Type: EventSessionStatusChanged})
 	}
-	for i := 0; i < count; i++ {
-		idx := (s.statusRRIndex + i) % len(sessions)
-		sess := sessions[idx]
-		if processed[sess.ID] {
-			continue
+
+	// Round-robin pane scan — only on full cycles. Fast cycles (hook-driven)
+	// already enqueued the affected session into the priority drain above,
+	// so they have nothing useful left to do here. Skipping keeps the fast
+	// path cheap and uncoupled from total session count.
+	if !fast {
+		count := statusRoundRobin
+		if count > len(sessions) {
+			count = len(sessions)
 		}
-		s.updateAndPersistStatus(sess)
+		for i := 0; i < count; i++ {
+			idx := (s.statusRRIndex + i) % len(sessions)
+			sess := sessions[idx]
+			if processed[sess.ID] {
+				continue
+			}
+			cycleEntry.RoundRobinCount++
+			if s.updateAndPersistStatus(sess, "round-robin") {
+				cycleEntry.StatusChangedCount++
+			}
+		}
+		s.statusRRIndex = (s.statusRRIndex + count) % len(sessions)
 	}
-	s.statusRRIndex = (s.statusRRIndex + count) % len(sessions)
 
-	repos := uniqueRepoPathsFromSessions(sessions)
-	if len(repos) > 0 {
-		idx := s.gitRRIndex % len(repos)
-		repo := repos[idx]
-
-		info := git.RefreshGitInfo(repo)
-
-		s.mu.Lock()
-		if old, ok := s.gitInfoCache[repo]; ok && old.PR != nil {
-			info.PR = old.PR
-			info.LastPRRefresh = old.LastPRRefresh
-		}
-		s.mu.Unlock()
-
-		if s.ghAvailable && (info.LastPRRefresh.IsZero() || time.Since(info.LastPRRefresh) > prTTL) {
-			git.RefreshPRInfo(info, repo)
-		}
-
-		s.mu.Lock()
-		s.gitInfoCache[repo] = info
-		s.mu.Unlock()
-
-		s.gitRRIndex++
-	}
+	// Git/PR refresh is intentionally NOT done here — it lives in `repoWorker`
+	// on its own goroutine so a slow `gh pr view` can never block a hook
+	// event from reaching observers.
 
 	s.notify(Event{Type: EventSessionStatusChanged})
+}
+
+// repoWorker runs git/PR refresh on its own goroutine, decoupled from the
+// status cycle. Round-robins one repo per tick to keep latency bounded; on
+// machines with many repos the visible refresh interval per repo grows
+// linearly (same as the old in-cycle behaviour). The status worker only
+// touches `gitInfoCache` for reads, so taking the lock here is the only
+// synchronisation needed.
+func (s *SessionService) repoWorker() {
+	defer func() {
+		if r := recover(); r != nil {
+			debuglog.Logger.Error("repoWorker panic recovered", "panic", r)
+		}
+	}()
+
+	interval := defaultTickInterval
+	if s.cfg != nil && s.cfg.TickIntervalSec > 0 {
+		interval = time.Duration(s.cfg.TickIntervalSec) * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		s.repoWorkerCycle()
+	}
+}
+
+func (s *SessionService) repoWorkerCycle() {
+	s.mu.RLock()
+	sessions := make([]*session.Session, len(s.sessions))
+	copy(sessions, s.sessions)
+	s.mu.RUnlock()
+	if len(sessions) == 0 {
+		return
+	}
+
+	repos := uniqueRepoPathsFromSessions(sessions)
+	if len(repos) == 0 {
+		return
+	}
+	idx := s.gitRRIndex % len(repos)
+	repo := repos[idx]
+
+	info := git.RefreshGitInfo(repo)
+
+	s.mu.Lock()
+	if old, ok := s.gitInfoCache[repo]; ok && old.PR != nil {
+		info.PR = old.PR
+		info.LastPRRefresh = old.LastPRRefresh
+	}
+	s.mu.Unlock()
+
+	if s.ghAvailable && (info.LastPRRefresh.IsZero() || time.Since(info.LastPRRefresh) > prTTL) {
+		git.RefreshPRInfo(info, repo)
+	}
+
+	s.mu.Lock()
+	s.gitInfoCache[repo] = info
+	s.mu.Unlock()
+	s.gitRRIndex++
+
+	s.notify(Event{Type: EventSessionsChanged})
 }
 
 // --- Internal helpers ---
 
 // updateAndPersistStatus runs sess.UpdateStatus() (which scans the tmux pane
-// and merges with hook state), persisting any change to storage.
-func (s *SessionService) updateAndPersistStatus(sess *session.Session) {
+// and merges with hook state), persisting any change to storage. Returns
+// true when the status changed; the caller uses this for cycle accounting.
+// `source` describes the path that triggered the scan so the transition log
+// can show whether a change came from a priority queue vs round-robin.
+//
+// If UpdateStatus left the session in the applyHookFinished "hold" state
+// (hook says finished but tmux activity is still inside the 3s guard),
+// schedule a one-shot timer to re-enqueue the session as soon as the
+// activity window expires. Without this, a held session sat at its old
+// status until the round-robin index swept around — N/5 * tick seconds
+// of unnecessary lag.
+func (s *SessionService) updateAndPersistStatus(sess *session.Session, source string) bool {
 	oldStatus := sess.GetStatus()
 	sess.UpdateStatus()
 	newStatus := sess.GetStatus()
-	if oldStatus != newStatus {
+	changed := oldStatus != newStatus
+	if changed {
 		_ = s.storage.UpdateStatus(sess.ID, string(newStatus))
+		s.recordTransition(StatusTransitionEntry{
+			At:        time.Now(),
+			SessionID: sess.ID,
+			Title:     sess.Title,
+			Old:       string(oldStatus),
+			New:       string(newStatus),
+			Source:    "pane",
+			Reason:    source + " scan",
+		})
 	}
+	if delay := sess.PendingRecheckDelay(); delay > 0 {
+		s.scheduleRecheck(sess.ID, delay)
+	}
+	return changed
+}
+
+// scheduleRecheck arms a one-shot timer that, once fired, enqueues the
+// session into the priority queue and nudges the fast worker. Used by
+// updateAndPersistStatus to follow up on hold-state sessions.
+func (s *SessionService) scheduleRecheck(sessionID string, delay time.Duration) {
+	time.AfterFunc(delay, func() {
+		select {
+		case <-s.ctx.Done():
+			return
+		default:
+		}
+		s.EnqueuePriority(sessionID)
+		select {
+		case s.fastTrigger <- struct{}{}:
+		default:
+		}
+	})
 }
 
 func (s *SessionService) rebuildSessionMap() {

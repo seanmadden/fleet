@@ -41,6 +41,8 @@ enum DaemonClientRunner {
             ) { grpcClient in
                 let fleet = FleetFleet.Client(wrapping: grpcClient)
                 await model.set(connectionState: .connected, error: nil)
+                await model.attach(mutator: Mutator(client: fleet))
+                defer { Task { @MainActor [weak model] in model?.attach(mutator: nil) } }
 
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask {

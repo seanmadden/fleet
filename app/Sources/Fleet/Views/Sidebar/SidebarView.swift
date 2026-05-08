@@ -25,9 +25,9 @@ struct SidebarView: View {
     private var sessionList: some View {
         List(selection: $model.selectedSessionID) {
             ForEach(filteredRepos, id: \.id) { repo in
-                Section(header: RepoGroupHeader(repo: repo)) {
+                Section(header: RepoGroupHeader(repo: repo, model: model)) {
                     ForEach(repo.sessions, id: \.id) { session in
-                        SessionRow(session: session)
+                        SessionRow(session: session, model: model)
                             .tag(session.id as String?)
                     }
                 }

@@ -54,6 +54,7 @@ const (
 	Fleet_StreamHookEvents_FullMethodName   = "/fleet.v1.Fleet/StreamHookEvents"
 	Fleet_GetConfig_FullMethodName          = "/fleet.v1.Fleet/GetConfig"
 	Fleet_UpdateConfig_FullMethodName       = "/fleet.v1.Fleet/UpdateConfig"
+	Fleet_GetDiagnostics_FullMethodName     = "/fleet.v1.Fleet/GetDiagnostics"
 )
 
 // FleetClient is the client API for Fleet service.
@@ -112,6 +113,13 @@ type FleetClient interface {
 	// ── Config ─────────────────────────────────────────────────────────────
 	GetConfig(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*Config, error)
 	UpdateConfig(ctx context.Context, in *UpdateConfigRequest, opts ...grpc.CallOption) (*Config, error)
+	// ── Diagnostics ────────────────────────────────────────────────────────
+	// GetDiagnostics returns a status-detection-focused snapshot rendered as
+	// markdown. Used by the Mac app's Cmd-Shift-D hotkey to capture state
+	// when timing feels off and dump it to ~/.config/fleet/snapshots/. The
+	// markdown shape is human-readable and intentionally not stable — it
+	// changes as the daemon evolves.
+	GetDiagnostics(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*DiagnosticsResponse, error)
 }
 
 type fleetClient struct {
@@ -379,6 +387,16 @@ func (c *fleetClient) UpdateConfig(ctx context.Context, in *UpdateConfigRequest,
 	return out, nil
 }
 
+func (c *fleetClient) GetDiagnostics(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*DiagnosticsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiagnosticsResponse)
+	err := c.cc.Invoke(ctx, Fleet_GetDiagnostics_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // FleetServer is the server API for Fleet service.
 // All implementations must embed UnimplementedFleetServer
 // for forward compatibility.
@@ -435,6 +453,13 @@ type FleetServer interface {
 	// ── Config ─────────────────────────────────────────────────────────────
 	GetConfig(context.Context, *emptypb.Empty) (*Config, error)
 	UpdateConfig(context.Context, *UpdateConfigRequest) (*Config, error)
+	// ── Diagnostics ────────────────────────────────────────────────────────
+	// GetDiagnostics returns a status-detection-focused snapshot rendered as
+	// markdown. Used by the Mac app's Cmd-Shift-D hotkey to capture state
+	// when timing feels off and dump it to ~/.config/fleet/snapshots/. The
+	// markdown shape is human-readable and intentionally not stable — it
+	// changes as the daemon evolves.
+	GetDiagnostics(context.Context, *emptypb.Empty) (*DiagnosticsResponse, error)
 	mustEmbedUnimplementedFleetServer()
 }
 
@@ -513,6 +538,9 @@ func (UnimplementedFleetServer) GetConfig(context.Context, *emptypb.Empty) (*Con
 }
 func (UnimplementedFleetServer) UpdateConfig(context.Context, *UpdateConfigRequest) (*Config, error) {
 	return nil, status.Error(codes.Unimplemented, "method UpdateConfig not implemented")
+}
+func (UnimplementedFleetServer) GetDiagnostics(context.Context, *emptypb.Empty) (*DiagnosticsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDiagnostics not implemented")
 }
 func (UnimplementedFleetServer) mustEmbedUnimplementedFleetServer() {}
 func (UnimplementedFleetServer) testEmbeddedByValue()               {}
@@ -928,6 +956,24 @@ func _Fleet_UpdateConfig_Handler(srv interface{}, ctx context.Context, dec func(
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Fleet_GetDiagnostics_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(FleetServer).GetDiagnostics(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Fleet_GetDiagnostics_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(FleetServer).GetDiagnostics(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Fleet_ServiceDesc is the grpc.ServiceDesc for Fleet service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1014,6 +1060,10 @@ var Fleet_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UpdateConfig",
 			Handler:    _Fleet_UpdateConfig_Handler,
+		},
+		{
+			MethodName: "GetDiagnostics",
+			Handler:    _Fleet_GetDiagnostics_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

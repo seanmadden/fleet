@@ -158,6 +158,77 @@ func (s *Session) GetHookStatus() string {
 	return s.hookStatus
 }
 
+// DiagnosticsSnapshot captures the per-session anti-flicker / hook state
+// the daemon's diagnostics RPC exposes. All fields are safe to read off
+// the goroutine that owns the session — they're cheap copies.
+type DiagnosticsSnapshot struct {
+	HookStatus          string
+	HookUpdatedAt       time.Time
+	LastContentHash     string
+	LastContentChangeAt time.Time
+}
+
+// Diagnostics returns a thread-safe snapshot of the anti-flicker state
+// fields the worker uses when deciding whether to flip status.
+func (s *Session) Diagnostics() DiagnosticsSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return DiagnosticsSnapshot{
+		HookStatus:          s.hookStatus,
+		HookUpdatedAt:       s.hookUpdatedAt,
+		LastContentHash:     s.lastContentHash,
+		LastContentChangeAt: s.lastContentChangeAt,
+	}
+}
+
+// finishedActivityGuard mirrors the constant inside applyHookFinished. Kept
+// here so PendingRecheckDelay can compute the exact remaining window
+// without applyHookFinished and PendingRecheckDelay drifting apart.
+const finishedActivityGuard = 3 * time.Second
+
+// PendingRecheckDelay returns a non-zero duration when the session is in
+// the applyHookFinished "hold state" — hook says finished but tmux's
+// pane was active too recently for the daemon to trust it. Callers (the
+// status worker) use this to arm a one-shot timer that re-enqueues the
+// session as soon as the activity guard window passes; without that, a
+// session can sit at running/waiting until the round-robin scan happens
+// to come around (up to N/statusRoundRobin * tickInterval seconds).
+//
+// Returns 0 when no recheck is needed (status already matches the hook,
+// or the hook isn't asking for finished, or there's no tmux session).
+func (s *Session) PendingRecheckDelay() time.Duration {
+	s.mu.RLock()
+	hookStatus := s.hookStatus
+	currentStatus := s.Status
+	s.mu.RUnlock()
+
+	if hookStatus != "finished" {
+		return 0
+	}
+	// If we're already in a terminal state, there's nothing to do — the
+	// hook agrees and any held state has already cleared.
+	if currentStatus == StatusFinished || currentStatus == StatusIdle {
+		return 0
+	}
+	if s.tmuxSession == nil {
+		return 0
+	}
+	activity, ok := s.tmuxSession.GetActivity()
+	if !ok {
+		return 0
+	}
+	elapsed := time.Since(time.Unix(activity, 0))
+	if elapsed >= finishedActivityGuard {
+		// The guard would already release on the next scan; let priority
+		// drain handle it without our help.
+		return 0
+	}
+	// Add a small buffer so the recheck lands just after the guard releases
+	// (tmux activity timestamps have second resolution; we don't want to
+	// race the boundary).
+	return finishedActivityGuard - elapsed + 200*time.Millisecond
+}
+
 // getCapturer returns the pane capturer (test override or real tmux session).
 func (s *Session) getCapturer() PaneCapturer {
 	if s.paneCapturer != nil {
@@ -548,35 +619,37 @@ func (s *Session) applyHookFinished(paneStatus Status, log *slog.Logger) {
 		log.Info("hook says finished but pane shows running, overriding")
 		return
 	}
-	if paneStatus == StatusWaiting {
-		// Hook says finished (e.g. parent Stop when delegating to sub-agent)
-		// but pane shows a permission prompt — sub-agent is waiting for approval.
-		s.Status = StatusWaiting
-		s.Acknowledged = false
-		log.Info("hook says finished but pane shows waiting, overriding")
-		return
-	}
-	// Pane detection says "finished" or gave no signal. Before committing to
-	// that, corroborate with tmux window_activity: if the pane was written to
-	// in the last few seconds, Claude's TUI is actively rendering (spinner
-	// animation, sub-agent output bursts that briefly push the spinner line
-	// out of the recent-lines window). Hold the previous state instead of
-	// flipping, so a single-tick pane-detection miss doesn't cause idle/finished
-	// oscillation while Claude is actually working.
-	//
-	// This is only safe in the hook=finished path: here recent activity means
-	// "Claude is writing output", which argues against finished. In the
-	// hook=waiting path (see applyHookWaiting), activity can be sub-agent
-	// output while the permission prompt sits unanswered, so activity there
-	// can't distinguish "user approved" from "user still deciding".
+	// Activity guard. Claude's TUI keeps writing for ~1-2s after Stop fires
+	// (final response text, status indicator). During this window, the
+	// pane content is unreliable for distinguishing finished vs. waiting,
+	// so we don't trust paneStatus here. But we DO trust the hook itself —
+	// Stop only fires after the user's input has been consumed. So if
+	// `Status` was `waiting`, we know it's stale. Show `running` as an
+	// intermediate state so the user gets immediate feedback that their
+	// input landed; PendingRecheckDelay in service.go re-runs UpdateStatus
+	// after the guard expires, and by then we can trust paneStatus to
+	// distinguish the normal finish from a sub-agent waiting case.
 	if s.tmuxSession != nil {
 		if activity, ok := s.tmuxSession.GetActivity(); ok {
-			if time.Since(time.Unix(activity, 0)) < 3*time.Second {
-				log.Info("hook says finished, pane ambiguous/idle, but tmux activity <3s — holding state",
-					"paneStatus", paneStatus, "current", s.Status)
+			if time.Since(time.Unix(activity, 0)) < finishedActivityGuard {
+				if s.Status != StatusRunning {
+					log.Info("hook says finished, activity fresh — showing running until guard expires",
+						"prev", s.Status, "paneStatus", paneStatus)
+					s.Status = StatusRunning
+					s.Acknowledged = false
+				}
 				return
 			}
 		}
+	}
+	if paneStatus == StatusWaiting {
+		// Activity has settled (>3s) and the pane STILL shows a permission
+		// prompt — the parent agent fired Stop while a sub-agent is waiting
+		// for approval. Reflect waiting so the user can act on it.
+		s.Status = StatusWaiting
+		s.Acknowledged = false
+		log.Info("hook says finished, pane shows waiting after activity settled — sub-agent waiting")
+		return
 	}
 	if s.Acknowledged {
 		s.Status = StatusIdle

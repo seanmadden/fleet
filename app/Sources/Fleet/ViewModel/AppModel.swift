@@ -22,15 +22,29 @@ final class AppModel {
     private(set) var slotBindings: [Int: String] = [:]
 
     // ─── UI state ────────────────────────────────────────────────────
-    var selectedSessionID: String?
+    var selectedSessionID: String? {
+        didSet { onSelectionChange(from: oldValue) }
+    }
     var filterText: String = ""
+
+    // Pending rename session id; SidebarView swaps the row for a TextField
+    // when this matches a row's id. nil means no row is in edit mode.
+    var renamingSessionID: String?
+
+    // Pending delete confirmation. SwiftUI binds to this for the .alert.
+    var pendingDeletion: Session?
 
     // ─── Connection state ────────────────────────────────────────────
     private(set) var connectionState: ConnectionState = .connecting
     private(set) var lastError: String?
 
+    // Transient red banner for failed mutations; cleared by `errorToastClearer`.
+    private(set) var errorToast: String?
+    private var errorToastClearer: Task<Void, Never>?
+
     // ─── Lifecycle ───────────────────────────────────────────────────
     private var runnerTask: Task<Void, Never>?
+    private(set) var mutator: Mutator?
 
     func start() {
         guard runnerTask == nil else { return }
@@ -132,5 +146,129 @@ final class AppModel {
 
     func applySlotBindings(_ bindings: [Int: String]) {
         self.slotBindings = bindings
+    }
+
+    // ─── Mutator wiring (set by DaemonClientRunner) ──────────────────
+
+    func attach(mutator: Mutator?) {
+        self.mutator = mutator
+    }
+
+    // ─── Selection side-effect: ack on focus ─────────────────────────
+
+    private func onSelectionChange(from old: String?) {
+        guard let id = selectedSessionID, id != old,
+              let session = sessionsByID[id],
+              session.status == .finished, !session.acknowledged
+        else { return }
+        Task { await dispatchAcknowledge(sessionID: id) }
+    }
+
+    // ─── Mutation dispatch (called from views) ───────────────────────
+
+    func dispatchQuickApprove() async {
+        guard let id = selectedSessionID,
+              let session = sessionsByID[id],
+              session.status == .waiting,
+              let m = mutator
+        else { return }
+        // Optimistic flip: drop the row out of `waiting` immediately so the
+        // user gets feedback that their Y landed. The next SessionUpdate
+        // from the daemon (sub-second once we wired TriggerRefresh into the
+        // hook watcher) reconciles to the real status — running while the
+        // turn continues, finished when Stop fires.
+        var optimistic = session
+        optimistic.status = .running
+        sessionsByID[id] = optimistic
+        await run(label: "send keys") {
+            try await m.sendKeys(sessionID: id, keys: ["y"], submit: true)
+        }
+    }
+
+    func dispatchDelete(sessionID: String) async {
+        guard let m = mutator else { return }
+        await run(label: "delete") {
+            try await m.delete(sessionID: sessionID)
+        }
+    }
+
+    func dispatchRestart(sessionID: String) async {
+        guard let m = mutator else { return }
+        await run(label: "restart") {
+            try await m.restart(sessionID: sessionID)
+        }
+    }
+
+    func dispatchRename(sessionID: String, title: String) async {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let m = mutator else { return }
+        await run(label: "rename") {
+            try await m.rename(sessionID: sessionID, title: trimmed)
+        }
+    }
+
+    func dispatchAcknowledge(sessionID: String) async {
+        guard let m = mutator else { return }
+        // Acknowledge is best-effort; failures aren't worth a toast.
+        try? await m.acknowledge(sessionID: sessionID)
+    }
+
+    func dispatchPinRepo(root: String, pinned: Bool) async {
+        guard let m = mutator else { return }
+        await run(label: pinned ? "unpin" : "pin") {
+            if pinned {
+                try await m.unpinRepo(root: root)
+            } else {
+                try await m.pinRepo(root: root)
+            }
+        }
+    }
+
+    // Cmd-Shift-D: capture the daemon's status-detection snapshot and dump
+    // it to ~/.config/fleet/snapshots/. Surfaces a toast with the saved
+    // path on success, or the error string on failure.
+    func dispatchSnapshot() async {
+        guard let m = mutator else {
+            showErrorToast("snapshot: daemon not connected")
+            return
+        }
+        do {
+            let markdown = try await m.diagnostics()
+            let url = try SnapshotWriter.write(markdown: markdown)
+            self.errorToast = "Snapshot saved: \(url.path)"
+            errorToastClearer?.cancel()
+            errorToastClearer = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                guard !Task.isCancelled else { return }
+                self?.clearErrorToast()
+            }
+        } catch {
+            showErrorToast("snapshot: \(error)")
+        }
+    }
+
+    // ─── Toast helpers ───────────────────────────────────────────────
+
+    private func run(label: String, op: () async throws -> Void) async {
+        do {
+            try await op()
+        } catch {
+            showErrorToast("\(label): \(error)")
+        }
+    }
+
+    func showErrorToast(_ message: String) {
+        self.errorToast = message
+        errorToastClearer?.cancel()
+        errorToastClearer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            self?.clearErrorToast()
+        }
+    }
+
+    private func clearErrorToast() {
+        self.errorToast = nil
+        self.errorToastClearer = nil
     }
 }

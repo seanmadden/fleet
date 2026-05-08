@@ -18,9 +18,12 @@ struct AppIconImage: View {
         let cornerRadius = squircleSize * 0.2237
 
         // The mark's ink lives in 32×34 of its 64×64 grid with asymmetric
-        // padding (14/14 on top-left, 18/16 on right-bottom). Render at
-        // 80% of the squircle and counter-shift so the ink centers.
-        let markSize = squircleSize * 0.80
+        // padding (14/14 on top-left, 18/16 on right-bottom). Scaling the
+        // grid to 1.1× the squircle puts the visible ink at ~55% of the
+        // squircle. The grid's transparent bleed extends past the squircle,
+        // but the stripes themselves are absolutely positioned at x:14–46,
+        // y:14–48 of the grid — so the visible ink stays inside.
+        let markSize = squircleSize * 1.10
         let unit = markSize / 64
 
         ZStack {
