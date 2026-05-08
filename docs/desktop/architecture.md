@@ -17,6 +17,10 @@
 │   • Owns git, gh, repo info cache                                   │
 │   • Owns chrome-host (existing Chrome NMH bridge)                   │
 │   • Owns naming / auto-rename worker                                │
+│   • Three-goroutine status worker:                                  │
+│       statusWorker  — full pane scan, 2s ticker                     │
+│       fastWorker    — hook-watcher fsnotify path, no queueing       │
+│       repoWorker    — git + `gh pr view`, isolated from status      │
 │   ▲                                                                 │
 │   │  exposes: gRPC over Unix socket                                 │
 │   │  ~/.config/fleet/daemon.sock                                    │
@@ -78,6 +82,7 @@ Real schema is at [`proto/fleet/v1/fleet.proto`](../../proto/fleet/v1/fleet.prot
 - `SendKeys` covers quick-approve (Y), mid-flight steering, and any chrome-level interaction with the running Claude TUI.
 - `CapturePane` returns ANSI-stripped pane content for `@terminal` mention.
 - V2 RPCs (`GetWorkspaceDiff`, `GetSessionStats`, `RunSuggestedAction`) are sketched in proto comments; uncomment when V2 work starts.
+- `GetDiagnostics` returns a status-detection-focused markdown snapshot (per-session anti-flicker state + transition log + hook events + worker cycle log). Driven by the Mac app's `Cmd-Shift-D` hotkey; written to `~/.config/fleet/snapshots/`. The shape is intentionally not a stable wire contract — it's for human + LLM debugging only.
 
 Alternative considered: **JSON-RPC over Unix socket**. Simpler, no codegen, but every client reinvents typing. Rejected.
 
