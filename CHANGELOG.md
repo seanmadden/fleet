@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-05-12
+
+### Added
+
+- Crash dumps for dying sessions: when a session transitions to `error`, fleet writes a forensic snapshot to `~/.config/fleet/crashes/<id>_<ts>.txt` containing the tmux exit status/signal (with human-readable annotation — e.g. `9 (SIGKILL — likely OOM/Jetsam or external kill)`), last 200 lines of pane content (raw ANSI), the SessionEnd hook reason from Claude Code, and the last 6 perfwatch heartbeats — enough to tell a kernel kill from a panic from a clean exit at a glance. Tmux now uses `remain-on-exit on` so dead panes can be inspected before fleet cleans them up. Perfwatch heartbeats also gained a `sys_free_mb` field (system-wide free memory) so the heartbeat trail records memory-pressure collapse leading up to a crash.
+- `FLEET_AUTO_UPDATE_DISABLED=1` env var to skip the auto-updater on a per-launch basis (handy when running a local dev build you don't want overwritten by the latest release)
+- Storm detector in perfwatch: dumps a snapshot when sustained Update() throughput exceeds 200/s, catching tea.Cmd loops that flood the loop without any single Update going slow (the stall watchdog can't see those)
+- Per-repo `pr_checks.ignore` config in `.fleet.json` / `.fleet.local.json` (path.Match globs) to drop noisy CI checks like gitstream's `minimum-review/default_reviewers` from the PR-badge rollup, so a single non-actionable failure no longer turns the whole badge red.
+
+### Fixed
+
+- Status flickering between `waiting` and `running` while navigating Claude's AskUserQuestion dialog
+- Restarting a dead session no longer briefly flashes back to `error` (with a misleading crash dump) before the new Claude process fires its first hook. Restart now clears the previous Claude's hook state — both in memory and the on-disk status file — so the worker doesn't trust an 8-minute-old `status=dead` during the relaunch window. The crash-dump quota also re-arms when a fresh hook reports the session is alive again, so a real death following a false-positive flash still produces a dump.
+- TUI freezing for ~500ms when the 5-second undo-delete window expired while scrolling — the tmux kill now runs off the Update loop
+
 ## [2.1.0] - 2026-05-07
 
 ### Added
@@ -116,7 +131,8 @@ Initial open-source release.
 - `/ship` release workflow — comment `/ship` on any issue or PR to release
 - Changelog check on PRs with `/no-changelog` escape hatch
 
-[Unreleased]: https://github.com/brizzai/fleet/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/brizzai/fleet/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/brizzai/fleet/releases/tag/v2.2.0
 [2.1.0]: https://github.com/brizzai/fleet/releases/tag/v2.1.0
 [2.0.0]: https://github.com/brizzai/fleet/releases/tag/v2.0.0
 [1.3.0]: https://github.com/brizzai/fleet/releases/tag/v1.3.0
