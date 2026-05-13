@@ -22,6 +22,7 @@ type Report struct {
 	TmuxVersion   string
 	ClaudeVersion string
 	GhVersion     string
+	GlabVersion   string
 	Config        string
 	SessionCount  int
 	RecentErrors  []string // pre-formatted from ErrorHistory
@@ -63,6 +64,7 @@ func Collect(version string, sessionCount int) *Report {
 	r.TmuxVersion = runCmd("tmux", "-V")
 	r.ClaudeVersion = runCmd("claude", "--version")
 	r.GhVersion = firstLine(runCmd("gh", "--version"))
+	r.GlabVersion = firstLine(runCmd("glab", "--version"))
 
 	r.TerminalEnv = collectTerminalEnv()
 
@@ -160,6 +162,9 @@ func (r *Report) formatMarkdown(description string) string {
 	}
 	if r.GhVersion != "" {
 		fmt.Fprintf(&b, "- **gh CLI**: %s\n", r.GhVersion)
+	}
+	if r.GlabVersion != "" {
+		fmt.Fprintf(&b, "- **glab CLI**: %s\n", r.GlabVersion)
 	}
 	fmt.Fprintf(&b, "- **Sessions**: %d\n", r.SessionCount)
 	b.WriteString("\n")

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/brizzai/fleet/internal/forge"
 	"github.com/brizzai/fleet/internal/git"
-	"github.com/brizzai/fleet/internal/github"
 	"github.com/brizzai/fleet/internal/session"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -341,7 +341,7 @@ func renderRepoHeader(repoPath string, expanded bool, info RepoGroupInfo, repoIn
 	return fmt.Sprintf(" %s %s%s%s %s", icon, RepoHeaderStyle.Render(name), branchStr, dirtyStr, countStr) + statsStr + prStr
 }
 
-func renderPRBadge(pr *github.PR, selected bool) string {
+func renderPRBadge(pr *forge.PR, selected bool) string {
 	if pr == nil {
 		return ""
 	}
@@ -351,7 +351,12 @@ func renderPRBadge(pr *github.PR, selected bool) string {
 		return ""
 	}
 
-	badge := fmt.Sprintf("#%d", pr.Number)
+	// GitLab merge requests are referred to as !N (vs GitHub's #N).
+	sigil := "#"
+	if pr.Forge == "gitlab" {
+		sigil = "!"
+	}
+	badge := fmt.Sprintf("%s%d", sigil, pr.Number)
 
 	// Merged: purple with upward arrow.
 	if pr.State == "MERGED" {

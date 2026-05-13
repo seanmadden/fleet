@@ -22,6 +22,18 @@ func GetBranchName(repoPath string) string {
 	return strings.TrimSpace(string(output))
 }
 
+// RemoteURL returns the fetch URL of the repo's "origin" remote, or empty string
+// if there is no origin (or not a git repo). Used to detect which forge a repo
+// lives on.
+func RemoteURL(repoPath string) string {
+	cmd := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
 // HasUncommittedChanges returns true if the working tree has uncommitted changes.
 func HasUncommittedChanges(repoPath string) bool {
 	cmd := exec.Command("git", "-C", repoPath, "status", "--porcelain")

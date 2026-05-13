@@ -91,7 +91,7 @@ Every agent's state, always visible. Hook-based detection — no polling, no del
 
 ### Git-Native Sessions
 
-Sessions live under their repo. Branch name, dirty state, and full PR status on every header — CI pass/fail, review state, changes requested, unresolved threads. Collapse groups, filter with **`/`**, switch branches with **`b`**. Requires [`gh`](https://cli.github.com/) for PR info (optional).
+Sessions live under their repo. Branch name, dirty state, and full PR status on every header — CI pass/fail, review state, changes requested, unresolved threads. Collapse groups, filter with **`/`**, switch branches with **`b`**. Works with GitHub (via [`gh`](https://cli.github.com/)) and GitLab merge requests (via [`glab`](https://gitlab.com/gitlab-org/cli)) — the forge is auto-detected from the `origin` remote; both CLIs are optional, install whichever you use.
 
 ### Worktrees
 
@@ -107,7 +107,7 @@ Sessions live under their repo. Branch name, dirty state, and full PR status on 
 - **Full terminal attach** — **`Enter`** for full PTY, **`Tab`** for split mode (beta), **`Ctrl+Q`** to detach
 - **Auto-naming** — sessions title themselves from your prompt
 - **5 themes** — tokyo-night, catppuccin-mocha, rose-pine, nord, gruvbox (**`S`** to switch)
-- **Chrome tab control** — **`p`** opens PR in Chrome, reuses existing tab
+- **Chrome tab control** — **`p`** opens the PR / merge request in Chrome, reuses existing tab
 - **Bug reports** — **`!`** captures diagnostics and opens a pre-filled GitHub issue
 
 ## Why fleet?

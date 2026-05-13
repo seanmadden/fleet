@@ -1,3 +1,4 @@
+// Package github implements the forge.Provider interface on top of the `gh` CLI.
 package github
 
 import (
@@ -8,27 +9,37 @@ import (
 	"strings"
 
 	"github.com/brizzai/fleet/internal/debuglog"
+	"github.com/brizzai/fleet/internal/forge"
 )
 
-// PR represents a GitHub pull request.
-type PR struct {
-	Number            int
-	Title             string
-	URL               string
-	State             string // OPEN, CLOSED, MERGED
-	ReviewDecision    string // APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, ""
-	CIStatus          string // SUCCESS, FAILURE, PENDING, ""
-	UnresolvedThreads int    // count of unresolved review threads
-	HasConflicts      bool   // true when GitHub reports merge conflicts
+// Provider fetches PR metadata via the GitHub CLI.
+type Provider struct{}
+
+// New returns a GitHub forge provider.
+func New() *Provider { return &Provider{} }
+
+// Name implements forge.Provider.
+func (*Provider) Name() string { return "github" }
+
+// Available reports whether the `gh` CLI is installed and runnable.
+func (*Provider) Available() bool {
+	return exec.Command("gh", "--version").Run() == nil
 }
 
-// IsGHAvailable checks if the gh CLI is installed and accessible.
-func IsGHAvailable() bool {
-	cmd := exec.Command("gh", "--version")
-	return cmd.Run() == nil
+// IsAvailable is the package-level shorthand for (&Provider{}).Available().
+func IsAvailable() bool { return (&Provider{}).Available() }
+
+// HostMatches reports whether host looks like github.com or a GitHub Enterprise
+// instance (best-effort: matches "github.com" and "github.*"). GHE hosts without
+// "github" in the name aren't recognised here — detectForge falls back to
+// treating any repo as GitHub when `gh` is installed, which preserves the
+// pre-GitLab behaviour for those.
+func HostMatches(host string) bool {
+	host = strings.ToLower(host)
+	return host == "github.com" || strings.HasPrefix(host, "github.")
 }
 
-// ghPRResponse matches the JSON output of gh pr view.
+// ghPRResponse matches the JSON output of `gh pr view`.
 type ghPRResponse struct {
 	Number            int                `json:"number"`
 	Title             string             `json:"title"`
@@ -45,11 +56,11 @@ type statusCheckEntry struct {
 	Conclusion string `json:"conclusion"`
 }
 
-// GetPRForBranch returns the PR associated with the current branch, or nil if none.
+// GetPRForBranch returns the PR associated with branch, or nil if none.
 // ignorePatterns are path.Match globs applied to check names; matching checks are
 // dropped from the rollup before CI status is derived (lets repos suppress noisy
 // gates without affecting real check failures).
-func GetPRForBranch(repoPath, branch string, ignorePatterns []string) (*PR, error) {
+func (*Provider) GetPRForBranch(repoPath, branch string, ignorePatterns []string) (*forge.PR, error) {
 	if branch == "" || branch == "HEAD" {
 		return nil, nil
 	}
@@ -66,11 +77,11 @@ func GetPRForBranch(repoPath, branch string, ignorePatterns []string) (*PR, erro
 
 	var resp ghPRResponse
 	if err := json.Unmarshal(output, &resp); err != nil {
-		debuglog.Logger.Debug("GetPRForBranch JSON parse failed", "path", repoPath, "branch", branch, "error", err)
+		debuglog.Logger.Debug("github: GetPRForBranch JSON parse failed", "path", repoPath, "branch", branch, "error", err)
 		return nil, nil
 	}
 
-	pr := &PR{
+	return &forge.PR{
 		Number:            resp.Number,
 		Title:             resp.Title,
 		URL:               resp.URL,
@@ -79,9 +90,8 @@ func GetPRForBranch(repoPath, branch string, ignorePatterns []string) (*PR, erro
 		CIStatus:          deriveCIStatus(resp.StatusCheckRollup, ignorePatterns),
 		UnresolvedThreads: getUnresolvedThreadCount(repoPath, resp.Number, resp.URL),
 		HasConflicts:      resp.Mergeable == "CONFLICTING",
-	}
-
-	return pr, nil
+		Forge:             "github",
+	}, nil
 }
 
 // getUnresolvedThreadCount queries GitHub GraphQL API for unresolved review thread count.
@@ -90,7 +100,7 @@ func getUnresolvedThreadCount(repoPath string, prNumber int, prURL string) int {
 	trimmed := strings.TrimPrefix(prURL, "https://github.com/")
 	parts := strings.Split(trimmed, "/")
 	if len(parts) < 3 {
-		debuglog.Logger.Debug("getUnresolvedThreadCount failed to parse PR URL", "url", prURL)
+		debuglog.Logger.Debug("github: getUnresolvedThreadCount failed to parse PR URL", "url", prURL)
 		return 0
 	}
 	owner, repo := parts[0], parts[1]
@@ -109,7 +119,7 @@ func getUnresolvedThreadCount(repoPath string, prNumber int, prURL string) int {
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
-		debuglog.Logger.Debug("getUnresolvedThreadCount GraphQL query failed", "pr", prNumber, "error", err)
+		debuglog.Logger.Debug("github: getUnresolvedThreadCount GraphQL query failed", "pr", prNumber, "error", err)
 		return 0
 	}
 
@@ -127,7 +137,7 @@ func getUnresolvedThreadCount(repoPath string, prNumber int, prURL string) int {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(output, &result); err != nil {
-		debuglog.Logger.Debug("getUnresolvedThreadCount JSON parse failed", "pr", prNumber, "error", err)
+		debuglog.Logger.Debug("github: getUnresolvedThreadCount JSON parse failed", "pr", prNumber, "error", err)
 		return 0
 	}
 
