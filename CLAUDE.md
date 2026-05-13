@@ -44,9 +44,12 @@ internal/tmux/tmux.go        # Tmux abstraction (create, kill, capture)
 internal/tmux/pty.go         # PTY-based attach with Ctrl+Q detach
 internal/session/session.go  # Session model, status detection, claude --resume
 internal/session/storage.go  # SQLite persistence (sessions + claude_session_id)
-internal/git/git.go          # Git operations (branch, dirty, worktree)
-internal/git/repo_info.go    # RepoInfo cache + refresh logic
-internal/github/pr.go        # GitHub PR info via gh CLI
+internal/git/git.go          # Git operations (branch, dirty, worktree, origin remote URL)
+internal/git/repo_info.go    # RepoInfo cache + refresh logic (PR fetched via a forge.Provider)
+internal/forge/forge.go      # Forge abstraction: PR struct, Provider interface, ParseRemote (host/owner-repo from a git URL)
+internal/github/pr.go        # GitHub forge provider — PR info via gh CLI
+internal/gitlab/pr.go        # GitLab forge provider — MR info via glab CLI
+internal/ui/forge_detect.go  # Picks the forge.Provider per repo (origin host + .fleet.json "forge" override)
 internal/hooks/              # Hook-based status detection (claude_hooks, hook_watcher, status_file)
 internal/workspace/provider.go     # Provider interface + GitWorktreeProvider + ShellProvider
 internal/workspace/repo_config.go  # Per-repo .fleet.json loading (legacy .bc.json supported) + ResolveProvider
@@ -78,7 +81,7 @@ chrome-extension/                # Chrome MV3 extension (service worker, manifes
 - Sessions grouped by git repo root in sidebar with tree lines (├─/└─)
 - Status: Running, Waiting, Finished, Idle, Error, Starting
 - Status icons: ● (running/finished), ◐ (waiting), ○ (idle/starting), ✕ (error)
-- Keybindings: j/k nav, Enter attach, Space jump to next waiting/finished, a new session (instant, repo-scoped), n new session (any repo, path autocomplete), w new worktree session (base branch + new branch), d delete (Y to also destroy workspace, D to also remove repo), z undo delete (5s window), r restart, R rename, e editor, p open PR in browser, Y quick approve (waiting sessions), / filter, : or Ctrl+P command palette, S settings, ! bug report/diagnostics, ? help, q quit
+- Keybindings: j/k nav, Enter attach, Space jump to next waiting/finished, a new session (instant, repo-scoped), n new session (any repo, path autocomplete), w new worktree session (base branch + new branch), d delete (Y to also destroy workspace, D to also remove repo), z undo delete (5s window), r restart, R rename, e editor, p open PR/MR in browser, Y quick approve (waiting sessions), / filter, : or Ctrl+P command palette, S settings, ! bug report/diagnostics, ? help, q quit
 - Session hotkeys (RTS-style): `Alt+0-9` (or `=` then digit) binds the selected session to a slot; re-pressing `Alt+<N>` on a session already in slot N unbinds; `==` then digit clears any slot; plain `0-9` jumps to the bound session (double-tap within 400ms also attaches); `[N]` badge in sidebar marks bound sessions; bindings persist in SQLite `slot_bindings` table (FK cascade on session delete)
 - Command palette (: / Ctrl+P): fuzzy-searchable list of all actions; palette-only commands include "Reload All Sessions" (restarts all dead/error sessions)
 - Undo delete: `z` key restores last deleted session within 5s window (stacked — multiple deletes each undoable). Tmux kept alive during window for full restore.
@@ -86,14 +89,17 @@ chrome-extension/                # Chrome MV3 extension (service worker, manifes
 - Tmux status bar configured per session with detach hint (ctrl+q)
 - Attach uses PTY with Ctrl+Q intercept for clean detach (creack/pty + golang.org/x/term)
 - Repo headers show branch name (), dirty indicator (*), and PR badge (#N)
-- Git info refreshes every 2s (branch/dirty), PR info every 60s via `gh` CLI
-- PR badge: green ✓ (approved+CI passed), yellow (pending), red ✕ (CI fail) / ↩ (changes requested or unresolved threads), purple ⇡ (merged), hidden (closed)
-- PR info includes unresolved review thread count via GitHub GraphQL API
-- `gh` CLI optional — PR info hidden if not installed
+- PR badge sigil: `#N` for GitHub pull requests, `!N` for GitLab merge requests
+- Git info refreshes every 2s (branch/dirty), PR/MR info every 60s via the repo's forge provider (`gh` for GitHub, `glab` for GitLab)
+- PR badge: green ✓ (approved+CI passed), yellow (pending), red ✕ (CI fail) / ⚠ (merge conflicts) / ↩ (changes requested or unresolved threads), purple ⇡ (merged), hidden (closed)
+- Forge detection: per-repo `forge.Provider` chosen from the `origin` remote host — `*gitlab*`/gitlab.com → GitLab, `github.com`/`github.*` → GitHub, else fall back to GitHub when `gh` is installed (preserves pre-GitLab behaviour for GHE on odd hostnames); `.fleet.json` `"forge": "github"|"gitlab"` overrides. Resolved once per repo, cached in `Home.repoForge` (worker-only map).
+- GitHub PR info: state/review/CI rollup via `gh pr view`, unresolved review-thread count via `gh api graphql`, merge conflicts via `mergeable`
+- GitLab MR info: state/conflicts/pipeline/discussions via `glab mr view -F json`, approval state via `glab api .../approvals`; GitLab states normalised to GitHub spellings (opened→OPEN, merged→MERGED, closed/locked→CLOSED); `pr_checks.ignore` not yet applied to GitLab pipeline jobs
+- `gh` / `glab` optional — PR/MR badge hidden if the repo's forge CLI isn't installed
 - Preview strips OSC-8 hyperlink sequences to prevent dotted underline artifacts
 - Status detection: hook-based (primary, no time expiry) via Claude Code hooks + pane capture (fallback, ANSI-stripped)
 - Agent team status: sub-agents don't fire hooks, so pane detection handles team states via structural checks (numbered menu `❯ 1.`+`2.`+`Esc to cancel`, box-drawing `│`+`Waiting for team lead`); hook=running is never overridden to waiting by pane (avoids false-positives from code in scrollback)
-- All blocking I/O (tmux, git, gh) runs in background worker goroutine, never in Bubble Tea Update()
+- All blocking I/O (tmux, git, gh, glab) runs in background worker goroutine, never in Bubble Tea Update()
 - Hook status files: `~/.config/fleet/hooks/{session_id}.json`
 - Hook handler: `fleet hook-handler` (invoked by Claude Code hooks, reads FLEET_INSTANCE_ID env)
 - Hooks auto-installed into `~/.claude/settings.json` on TUI launch
@@ -103,7 +109,8 @@ chrome-extension/                # Chrome MV3 extension (service worker, manifes
 - Workspace creation is non-blocking: dialog closes immediately, phantom "Creating..." entry with spinner appears in sidebar, user can keep navigating
 - Worktree creation copies `.claude/settings.local.json` from source repo (configurable via `copy_claude_settings`, default true)
 - `.fleet.json` / `.fleet.local.json` in repo root (legacy `.bc.json` / `.bc.local.json` still read): `{"workspace": {"list": "cmd", "create": "cmd {{name}} {{branch}}", "destroy": "cmd {{name}}"}}`
-- `.fleet.json` / `.fleet.local.json` may also set `{"pr_checks": {"ignore": ["glob", ...]}}` to drop matching CI checks from the PR-badge rollup (path.Match globs; lists from both files merge additively; opt-in, empty by default)
+- `.fleet.json` / `.fleet.local.json` may also set `{"pr_checks": {"ignore": ["glob", ...]}}` to drop matching CI checks from the PR-badge rollup (path.Match globs; lists from both files merge additively; opt-in, empty by default; GitHub only for now)
+- `.fleet.json` / `.fleet.local.json` may also set `{"forge": "github"|"gitlab"}` to override forge auto-detection (mainly for self-hosted GitLab on a hostname that doesn't contain "gitlab")
 - Claude session resume: captures Claude session_id from hooks, uses `claude --resume <id>` on restart
 - Editor: config.editor > $EDITOR > "code" (VS Code)
 - Themes: tokyo-night (default), catppuccin-mocha, rose-pine, nord, gruvbox — configurable via settings (S key)
@@ -111,7 +118,7 @@ chrome-extension/                # Chrome MV3 extension (service worker, manifes
 - Bug report: `!` key opens dialog showing error history, action log, system diagnostics; `g` opens GitHub issue with pre-filled markdown via `gh issue create --web`
 - Error history: ring buffer (max 50) of errors that flash for 5s — persists for bug reporting
 - Action log: ring buffer (max 100) of user actions (attach, delete, restart, editor, approve, etc.) for "steps to reproduce"
-- Diagnostics: app version, macOS version, tmux/claude/gh versions, config, last 100 lines of debug.log; home dir sanitized to `~`
+- Diagnostics: app version, macOS version, tmux/claude/gh/glab versions, config, last 100 lines of debug.log; home dir sanitized to `~`
 - Auto-naming: sessions auto-titled from user prompt via smart heuristic (filler stripping, word-boundary truncation)
 - Auto-naming pipeline: UserPromptSubmit hook → status file → HookWatcher → Session.FirstPrompt → worker cycle → naming.GenerateTitle
 - Retitle: after 3 prompts, title regenerated from latest prompt (better reflects session scope)

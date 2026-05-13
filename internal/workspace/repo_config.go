@@ -13,6 +13,10 @@ import (
 type RepoWorkspaceConfig struct {
 	Workspace ShellConfig    `json:"workspace"`
 	PRChecks  PRChecksConfig `json:"pr_checks"`
+	// Forge overrides forge auto-detection for this repo: "github" or "gitlab".
+	// Empty means detect from the origin remote URL. Mainly useful for
+	// self-hosted GitLab on a hostname that doesn't contain "gitlab".
+	Forge string `json:"forge,omitempty"`
 }
 
 // ShellConfig holds shell command configuration for workspace operations.
@@ -50,6 +54,10 @@ func loadMergedRepoConfig(repoPath string) RepoWorkspaceConfig {
 		merged.Workspace.Destroy = local.Workspace.Destroy
 	}
 
+	if local.Forge != "" {
+		merged.Forge = local.Forge
+	}
+
 	merged.PRChecks.Ignore = dedupeStrings(append(base.PRChecks.Ignore, local.PRChecks.Ignore...))
 	return merged
 }
@@ -75,6 +83,12 @@ func dedupeStrings(in []string) []string {
 // if no config sets it. Patterns are path.Match globs against check names.
 func IgnorePatterns(repoPath string) []string {
 	return loadMergedRepoConfig(repoPath).PRChecks.Ignore
+}
+
+// ForgeOverride returns the repo's configured forge ("github" | "gitlab"), or
+// empty string if none is set (auto-detect).
+func ForgeOverride(repoPath string) string {
+	return loadMergedRepoConfig(repoPath).Forge
 }
 
 // ResolveProvider loads workspace config from repoPath. Preference is by file

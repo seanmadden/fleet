@@ -17,8 +17,8 @@ import (
 	"github.com/brizzai/fleet/internal/chrome"
 	"github.com/brizzai/fleet/internal/config"
 	"github.com/brizzai/fleet/internal/debuglog"
+	"github.com/brizzai/fleet/internal/forge"
 	"github.com/brizzai/fleet/internal/git"
-	"github.com/brizzai/fleet/internal/github"
 	"github.com/brizzai/fleet/internal/hooks"
 	"github.com/brizzai/fleet/internal/naming"
 	"github.com/brizzai/fleet/internal/perfwatch"
@@ -85,7 +85,6 @@ type (
 	loadSessionsMsg struct {
 		sessions     []*session.Session
 		slotBindings map[int]string
-		ghAvailable  bool
 		warning      string
 		err          error
 	}
@@ -151,9 +150,9 @@ type Home struct {
 	previewCacheTime map[string]time.Time
 	statusRRIndex    int // round-robin index for status updates
 
-	gitInfoCache map[string]*git.RepoInfo // repo root path -> git info
-	gitRRIndex   int                      // round-robin index for git refresh
-	ghAvailable  bool                     // cached gh CLI availability
+	gitInfoCache map[string]*git.RepoInfo  // repo root path -> git info
+	gitRRIndex   int                       // round-robin index for git refresh
+	repoForge    map[string]forge.Provider // repo root path -> forge provider (nil = none); worker-only, populated lazily
 
 	hookWatcher *hooks.HookWatcher
 
@@ -236,6 +235,7 @@ func NewHome(storage *session.StateDB, cfg *config.Config, version string) *Home
 		previewCache:          make(map[string]string),
 		previewCacheTime:      make(map[string]time.Time),
 		gitInfoCache:          make(map[string]*git.RepoInfo),
+		repoForge:             make(map[string]forge.Provider),
 		filterInput:           fi,
 		cfg:                   cfg,
 		version:               version,
@@ -688,7 +688,6 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.repoExpanded[repo] = true
 			}
 		}
-		h.ghAvailable = msg.ghAvailable
 		h.rebuildFlatItems()
 		if len(h.flatItems) > 0 && h.cursor == 0 {
 			h.cursor = FirstSelectableItem(h.flatItems)
@@ -1883,6 +1882,10 @@ func (h *Home) handleFocusKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	sends, unfocus := translateFocusKey(msg)
+	debuglog.Logger.Debug("focus key",
+		"type", int(msg.Type), "typeStr", msg.Type.String(), "alt", msg.Alt,
+		"runes", string(msg.Runes), "string", msg.String(),
+		"sends", fmt.Sprintf("%+v", sends), "unfocus", unfocus)
 	if unfocus {
 		h.focusMode = false
 		h.sidebarDirty = true
@@ -2493,8 +2496,14 @@ drainPriority:
 		}
 		h.workerMu.Unlock()
 
-		if h.ghAvailable && (info.LastPRRefresh.IsZero() || time.Since(info.LastPRRefresh) > 60*time.Second) {
-			git.RefreshPRInfo(info, repo, workspace.IgnorePatterns(repo))
+		// Resolve the repo's forge once, then cache it (worker-only map).
+		provider, seen := h.repoForge[repo]
+		if !seen {
+			provider = detectForge(repo)
+			h.repoForge[repo] = provider
+		}
+		if provider != nil && (info.LastPRRefresh.IsZero() || time.Since(info.LastPRRefresh) > 60*time.Second) {
+			git.RefreshPRInfo(info, repo, workspace.IgnorePatterns(repo), provider)
 		}
 
 		h.workerMu.Lock()
@@ -2920,7 +2929,6 @@ func (h *Home) loadSessions() tea.Msg {
 	configDir := hooks.GetClaudeConfigDir()
 	hooks.InjectClaudeHooks(configDir)
 	chrome.InstallNativeMessagingHost()
-	ghAvailable := github.IsGHAvailable()
 
 	// Check for claude CLI availability.
 	var warning string
@@ -2928,7 +2936,7 @@ func (h *Home) loadSessions() tea.Msg {
 		warning = "claude CLI not found — install Claude Code to create sessions"
 	}
 
-	return loadSessionsMsg{sessions: sessions, slotBindings: slotBindings, ghAvailable: ghAvailable, warning: warning}
+	return loadSessionsMsg{sessions: sessions, slotBindings: slotBindings, warning: warning}
 }
 
 func (h *Home) setError(err error) {
