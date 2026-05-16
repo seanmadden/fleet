@@ -104,7 +104,7 @@ chrome-extension/                # Chrome MV3 extension (service worker, manifes
 - Hook handler: `fleet hook-handler` (invoked by Claude Code hooks, reads FLEET_INSTANCE_ID env)
 - Hooks auto-installed into `~/.claude/settings.json` on TUI launch
 - Debug log: `~/.config/fleet/debug.log` (slog, init in TUI and hook-handler)
-- Config file: `~/.config/fleet/config.json` (tick_interval_sec, default_project_path, editor, theme, auto_name_sessions, copy_claude_settings)
+- Config file: `~/.config/fleet/config.json` (tick_interval_sec, default_project_path, editor, theme, auto_name_sessions, copy_claude_settings, focus_on_new_session)
 - Workspace: built-in git worktree support (zero config), per-repo `.fleet.json` (or legacy `.bc.json`) overrides with custom shell commands
 - Workspace creation is non-blocking: dialog closes immediately, phantom "Creating..." entry with spinner appears in sidebar, user can keep navigating
 - Worktree creation copies `.claude/settings.local.json` from source repo (configurable via `copy_claude_settings`, default true)

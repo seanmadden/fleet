@@ -19,6 +19,7 @@ type Config struct {
 	AutoUpdate         *bool  `json:"auto_update,omitempty"`
 	CopyClaudeSettings *bool  `json:"copy_claude_settings,omitempty"`
 	EnterMode          string `json:"enter_mode,omitempty"` // "attach" or "split"
+	FocusOnNewSession  *bool  `json:"focus_on_new_session,omitempty"`
 	Telemetry          *bool  `json:"telemetry,omitempty"`
 }
 
@@ -120,6 +121,15 @@ func (c *Config) GetEnterMode() string {
 		return "split"
 	}
 	return "attach"
+}
+
+// IsFocusOnNewSessionEnabled returns whether to auto-focus newly created
+// sessions using the configured Enter mode (default: false).
+func (c *Config) IsFocusOnNewSessionEnabled() bool {
+	if c.FocusOnNewSession == nil {
+		return false
+	}
+	return *c.FocusOnNewSession
 }
 
 // IsTelemetryEnabled returns whether telemetry is enabled (default: true).
