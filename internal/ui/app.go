@@ -75,8 +75,9 @@ type (
 		err error
 	}
 	sessionCreateResultMsg struct {
-		session *session.Session
-		err     error
+		session   *session.Session
+		err       error
+		autoFocus bool // attach/focus immediately after creation (per cfg.IsFocusOnNewSessionEnabled)
 	}
 	previewMsg struct {
 		sessionID string
@@ -1335,12 +1336,13 @@ func (h *Home) handleSessionCreate(msg sessionCreateMsg) (tea.Model, tea.Cmd) {
 	debuglog.Logger.Info("creating session", "title", msg.title, "path", msg.path)
 	s := session.NewSession(msg.title, msg.path)
 	s.WorkspaceName = msg.workspaceName
+	autoFocus := h.cfg.IsFocusOnNewSessionEnabled()
 	return h, func() tea.Msg {
 		if err := s.Start(); err != nil {
 			debuglog.Logger.Error("session Start() failed", "title", msg.title, "path", msg.path, "err", err)
 			return sessionCreateResultMsg{err: err}
 		}
-		return sessionCreateResultMsg{session: s}
+		return sessionCreateResultMsg{session: s, autoFocus: autoFocus}
 	}
 }
 
@@ -1381,6 +1383,19 @@ func (h *Home) handleSessionCreateResult(msg sessionCreateResultMsg) (tea.Model,
 			h.syncViewport()
 			break
 		}
+	}
+
+	// Auto-focus the freshly created session if the user opted in. Uses
+	// the existing Enter mode setting so the post-create behavior matches
+	// what pressing Enter on the session would do.
+	if msg.autoFocus {
+		if h.cfg.GetEnterMode() == "split" {
+			h.actionLog.Add("focus preview", s.Title, true)
+			return h, h.enterFocusMode()
+		}
+		h.actionLog.Add("attach session", s.Title, true)
+		analytics.Track(analytics.EventSessionAttached, nil)
+		return h, h.attachSelected()
 	}
 
 	return h, h.fetchPreviewForSelected()

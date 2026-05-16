@@ -53,7 +53,7 @@ func (d *SettingsDialog) Update(msg tea.Msg) (*SettingsDialog, tea.Cmd) {
 		return d, nil
 	}
 
-	numRows := 8 // theme, editor, tick, auto-name, auto-update, copy-claude, enter-mode, telemetry
+	numRows := 9 // theme, editor, tick, auto-name, auto-update, copy-claude, enter-mode, focus-on-new, telemetry
 	switch keyMsg.String() {
 	case "j", "down":
 		d.cursor = (d.cursor + 1) % numRows
@@ -133,7 +133,12 @@ func (d *SettingsDialog) cycleValue(dir int) {
 			d.cfg.EnterMode = "attach"
 		}
 
-	case 7: // Telemetry
+	case 7: // Focus on new session
+		enabled := d.cfg.IsFocusOnNewSessionEnabled()
+		enabled = !enabled
+		d.cfg.FocusOnNewSession = &enabled
+
+	case 8: // Telemetry
 		enabled := d.cfg.IsTelemetryEnabled()
 		enabled = !enabled
 		d.cfg.Telemetry = &enabled
@@ -169,6 +174,11 @@ func (d *SettingsDialog) View() string {
 		copyClaudeValue = "off"
 	}
 
+	focusOnNewValue := "off"
+	if d.cfg.IsFocusOnNewSessionEnabled() {
+		focusOnNewValue = "on"
+	}
+
 	telemetryValue := "on"
 	if !d.cfg.IsTelemetryEnabled() {
 		telemetryValue = "off"
@@ -182,6 +192,7 @@ func (d *SettingsDialog) View() string {
 		{"Auto-update", autoUpdateValue},
 		{"Copy .claude", copyClaudeValue},
 		{"Enter mode", d.cfg.GetEnterMode()},
+		{"Focus on new", focusOnNewValue},
 		{"Telemetry", telemetryValue},
 	}
 
