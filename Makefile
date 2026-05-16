@@ -2,7 +2,7 @@ BINARY := fleet
 BUILD_DIR := build
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
-.PHONY: build run clean test fmt install lint coverage deps vet setup
+.PHONY: build run clean test fmt install install-dev lint coverage deps vet setup
 
 build:
 	go build -v -ldflags "-s -w -X main.version=$(VERSION)" -o $(BUILD_DIR)/$(BINARY) ./cmd/fleet
@@ -41,6 +41,12 @@ vet:
 
 install: build
 	cp $(BUILD_DIR)/$(BINARY) ~/.local/bin/
+
+# install-dev: symlink ~/.local/bin/fleet into this repo's build/ tree so
+# subsequent `make build` runs are picked up without re-installing. Pass
+# extra flags through with FLAGS, e.g. `make install-dev FLAGS=--copy`.
+install-dev:
+	./install-dev.sh $(FLAGS)
 
 setup:
 	pre-commit install

@@ -60,6 +60,22 @@ go install github.com/brizzai/fleet/cmd/fleet@latest
 
 Requires Go 1.26+.
 
+### From source (fork / local dev)
+
+```bash
+git clone <your-fork-url> && cd fleet
+./install-dev.sh           # symlink ~/.local/bin/fleet -> build/fleet
+# or: make install-dev
+```
+
+Subsequent `make build` runs are picked up automatically (the install is a
+symlink into `build/`). Add `--copy` to install a static copy, `--dir <path>`
+to install elsewhere, or `--name fleet-dev` to install under an alternate
+name so it doesn't shadow your Homebrew install. Disable the auto-updater
+(`auto_update: false` in `~/.config/fleet/config.json`, or
+`FLEET_AUTO_UPDATE_DISABLED=1`) so fork builds don't get replaced by the
+upstream release.
+
 ### Requirements
 
 - macOS
