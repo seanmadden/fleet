@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -153,7 +154,11 @@ func CollectGroupInfo(sessions []*session.Session, repoPath string) RepoGroupInf
 // RenderSidebar renders the session list with repo grouping and cursor.
 // slotBindings maps slot number (0-9) to session ID; an inverse lookup
 // decorates bound sessions with a [N] badge.
-func RenderSidebar(items []SidebarItem, sessions []*session.Session, gitInfo map[string]*git.RepoInfo, slotBindings map[int]string, cursor, viewOffset, width, height int) string {
+//
+// gitInfo is keyed by main-repo path (drives repo-header chrome). sessionInfo
+// is keyed by session ID and drives per-worktree-session row info (own branch,
+// dirty, PR badge); pass nil to fall back to the legacy "headers only" render.
+func RenderSidebar(items []SidebarItem, sessions []*session.Session, gitInfo map[string]*git.RepoInfo, sessionInfo map[string]*git.RepoInfo, slotBindings map[int]string, cursor, viewOffset, width, height int) string {
 	if len(items) == 0 {
 		return renderEmptyState(width, height)
 	}
@@ -213,12 +218,16 @@ func RenderSidebar(items []SidebarItem, sessions []*session.Session, gitInfo map
 			b.WriteString(renderPendingItem(item.Pending, item.IsLast, width, i == cursor))
 		} else {
 			slot := -1
+			var info *git.RepoInfo
 			if item.Session != nil {
 				if n, ok := slotBySession[item.Session.ID]; ok {
 					slot = n
 				}
+				if sessionInfo != nil {
+					info = sessionInfo[item.Session.ID]
+				}
 			}
-			b.WriteString(renderSessionItem(item.Session, item.IsLast, width, i == cursor, slot))
+			b.WriteString(renderSessionItem(item.Session, info, item.IsLast, width, i == cursor, slot))
 		}
 		if i < visibleEnd-1 {
 			b.WriteString("\n")
@@ -418,7 +427,12 @@ func renderPRBadge(pr *forge.PR, selected bool) string {
 	return style.Render(result)
 }
 
-func renderSessionItem(s *session.Session, isLast bool, width int, selected bool, slot int) string {
+// branchHexRE matches the `<8 lowercase hex>` shape that fleet's per-session
+// worktree flow assigns to a freshly created branch (the part after `claude/`).
+// Rendered dimmed in the sidebar to hint "not-yet-renamed".
+var branchHexRE = regexp.MustCompile(`^[0-9a-f]{8}$`)
+
+func renderSessionItem(s *session.Session, info *git.RepoInfo, isLast bool, width int, selected bool, slot int) string {
 	status := s.GetStatus()
 	symbolRaw := StatusSymbolRaw(status)
 	title := s.Title
@@ -435,8 +449,51 @@ func renderSessionItem(s *session.Session, isLast bool, width int, selected bool
 		slotRaw = fmt.Sprintf(" [%d]", slot)
 	}
 
-	// Truncate title if needed, accounting for the slot badge width.
-	maxTitleLen := width - 10 - len(slotRaw)
+	// Per-session branch / dirty / PR badge (worktree-only — no-worktree
+	// sessions have info == nil and inherit the repo-header info above).
+	branchStr := ""
+	dirtyStr := ""
+	prStr := ""
+	branchVisibleLen := 0
+	dirtyVisibleLen := 0
+	prVisibleLen := 0
+	if info != nil {
+		if info.Branch != "" {
+			branch := strings.TrimPrefix(info.Branch, "claude/")
+			dim := branchHexRE.MatchString(branch)
+			if len(branch) > 16 {
+				branch = branch[:13] + "..."
+			}
+			label := branchIcon + " " + branch
+			branchVisibleLen = 1 + len(label) // leading space + label
+			switch {
+			case selected:
+				branchStr = " " + SessionStatusSelStyle.Render(label)
+			case dim:
+				branchStr = " " + DimStyle.Render(label)
+			default:
+				branchStr = " " + BranchStyle.Render(label)
+			}
+		}
+		if info.IsDirty {
+			dirtyVisibleLen = 1
+			if selected {
+				dirtyStr = SessionStatusSelStyle.Render("*")
+			} else {
+				dirtyStr = DirtyStyle.Render("*")
+			}
+		}
+		if info.PR != nil {
+			rendered := renderPRBadge(info.PR, selected)
+			if rendered != "" {
+				prStr = " " + rendered
+				prVisibleLen = 1 + lipgloss.Width(rendered)
+			}
+		}
+	}
+
+	// Truncate title if needed, accounting for the slot badge + side info widths.
+	maxTitleLen := width - 10 - len(slotRaw) - branchVisibleLen - dirtyVisibleLen - prVisibleLen
 	if maxTitleLen < 10 {
 		maxTitleLen = 10
 	}
@@ -466,7 +523,7 @@ func renderSessionItem(s *session.Session, isLast bool, width int, selected bool
 	}
 
 	styledConnector := treeStyle.Render(connector)
-	return fmt.Sprintf(" %s%s %s %s%s", selPrefix, styledConnector, styledSymbol, styledTitle, styledSlot)
+	return fmt.Sprintf(" %s%s %s %s%s%s%s%s", selPrefix, styledConnector, styledSymbol, styledTitle, branchStr, dirtyStr, prStr, styledSlot)
 }
 
 func renderPendingItem(pw *PendingWorkspace, isLast bool, width int, selected bool) string {

@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/brizzai/fleet/internal/forge"
+	"github.com/brizzai/fleet/internal/git"
 	"github.com/brizzai/fleet/internal/session"
 )
 
@@ -102,4 +105,106 @@ func TestBuildFlatItemsRepoOrderTieBreaksAlphabetically(t *testing.T) {
 	// Reference session to avoid the import being unused if this file ever
 	// drops the other tests.
 	_ = (*session.Session)(nil)
+}
+
+// TestRenderSidebar_PerSessionInfo asserts a worktree-session row picks up its
+// own branch / dirty / PR badge from the sessionInfo map. The exact rendered
+// bytes go through lipgloss styles, so we assert visible content via
+// strings.Contains rather than fixture-locking the full ANSI output.
+func TestRenderSidebar_PerSessionInfo(t *testing.T) {
+	const (
+		repo      = "/tmp/mainrepo"
+		sessionID = "abc12345-1"
+	)
+	s := &session.Session{
+		ID:          sessionID,
+		Title:       "fix the bug",
+		ProjectPath: "/tmp/mainrepo-claude-abc12345",
+		Status:      session.StatusRunning,
+	}
+	items := []SidebarItem{
+		{IsRepoHeader: true, RepoPath: repo, Expanded: true, SessionCount: 1},
+		{Session: s, IsLast: true},
+	}
+	gitInfo := map[string]*git.RepoInfo{
+		repo: {Branch: "main"},
+	}
+	sessionInfo := map[string]*git.RepoInfo{
+		sessionID: {
+			Branch:  "claude/fix-bug",
+			IsDirty: true,
+			PR: &forge.PR{
+				Forge:  "github",
+				Number: 42,
+				State:  "OPEN",
+			},
+		},
+	}
+
+	out := RenderSidebar(items, []*session.Session{s}, gitInfo, sessionInfo, map[int]string{}, 0, 0, 80, 20)
+	if !strings.Contains(out, "fix-bug") {
+		t.Errorf("rendered sidebar missing per-session branch label %q\nout:\n%s", "fix-bug", out)
+	}
+	if !strings.Contains(out, "*") {
+		t.Errorf("rendered sidebar missing dirty asterisk\nout:\n%s", out)
+	}
+	if !strings.Contains(out, "#42") {
+		t.Errorf("rendered sidebar missing PR badge #42\nout:\n%s", out)
+	}
+}
+
+// TestRenderSidebar_NoSessionInfoLeavesRowsBare asserts no-worktree sessions
+// (sessionInfo == nil for that ID) still render as today — no branch, no PR.
+func TestRenderSidebar_NoSessionInfoLeavesRowsBare(t *testing.T) {
+	const repo = "/tmp/mainrepo"
+	s := &session.Session{
+		ID:          "no-wt",
+		Title:       "plain session",
+		ProjectPath: repo,
+		Status:      session.StatusRunning,
+	}
+	items := []SidebarItem{
+		{IsRepoHeader: true, RepoPath: repo, Expanded: true, SessionCount: 1},
+		{Session: s, IsLast: true},
+	}
+	gitInfo := map[string]*git.RepoInfo{
+		repo: {Branch: "main"},
+	}
+	out := RenderSidebar(items, []*session.Session{s}, gitInfo, map[string]*git.RepoInfo{}, map[int]string{}, 0, 0, 80, 20)
+	if strings.Contains(out, "#") {
+		t.Errorf("no-wt row should not render a PR badge; out:\n%s", out)
+	}
+	// The row text should still contain the title.
+	if !strings.Contains(out, "plain session") {
+		t.Errorf("rendered sidebar missing session title; out:\n%s", out)
+	}
+}
+
+// TestRenderSidebar_DimsHexBranch asserts an unrenamed `claude/<8hex>` branch
+// renders without the BranchStyle color (DimStyle is used instead) so the
+// visual hint matches the spec — the user shouldn't see the placeholder branch
+// as a "real" branch name in the sidebar.
+func TestRenderSidebar_DimsHexBranch(t *testing.T) {
+	const (
+		repo      = "/tmp/mainrepo"
+		sessionID = "abc12345-1"
+	)
+	s := &session.Session{
+		ID:          sessionID,
+		Title:       "claude session",
+		ProjectPath: "/tmp/mainrepo-claude-abc12345",
+		Status:      session.StatusRunning,
+	}
+	items := []SidebarItem{
+		{IsRepoHeader: true, RepoPath: repo, Expanded: true, SessionCount: 1},
+		{Session: s, IsLast: true},
+	}
+	sessionInfo := map[string]*git.RepoInfo{
+		sessionID: {Branch: "claude/abc12345"},
+	}
+	out := RenderSidebar(items, []*session.Session{s}, nil, sessionInfo, map[int]string{}, 0, 0, 80, 20)
+	// The hex string still shows up in the output (just dim-styled).
+	if !strings.Contains(out, "abc12345") {
+		t.Errorf("rendered sidebar should still include the hex branch label; out:\n%s", out)
+	}
 }
