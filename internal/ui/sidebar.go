@@ -41,7 +41,10 @@ type RepoGroupInfo struct {
 // filter, when non-empty, only includes sessions whose title contains the filter string.
 // pending workspaces are injected as phantom entries under their repo group.
 // pinnedRepos includes repos that should appear even with no sessions.
-func BuildFlatItems(sessions []*session.Session, pending []*PendingWorkspace, expanded map[string]bool, filter string, pinnedRepos map[string]bool) []SidebarItem {
+// repoOrder, when present for a repo, sets its explicit sort position; repos
+// absent from the map fall back to alphabetical (sentinel 0 / missing keys
+// preserve legacy ordering on a fresh install).
+func BuildFlatItems(sessions []*session.Session, pending []*PendingWorkspace, expanded map[string]bool, filter string, pinnedRepos map[string]bool, repoOrder map[string]int64) []SidebarItem {
 	groups := session.GroupByRepo(sessions)
 
 	// Include repos that only have pending workspaces (no sessions yet).
@@ -58,12 +61,20 @@ func BuildFlatItems(sessions []*session.Session, pending []*PendingWorkspace, ex
 		}
 	}
 
-	// Sort repo paths alphabetically.
+	// Sort repo paths by (repoOrder key, path). Repos without an entry tie on
+	// key=0 and fall through to the alphabetical tiebreaker, matching the
+	// pre-reorder behaviour for fresh installs.
 	repos := make([]string, 0, len(groups))
 	for repo := range groups {
 		repos = append(repos, repo)
 	}
-	sort.Strings(repos)
+	sort.SliceStable(repos, func(i, j int) bool {
+		ki, kj := repoOrder[repos[i]], repoOrder[repos[j]]
+		if ki != kj {
+			return ki < kj
+		}
+		return repos[i] < repos[j]
+	})
 
 	lowerFilter := strings.ToLower(filter)
 

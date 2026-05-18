@@ -86,6 +86,7 @@ type (
 	loadSessionsMsg struct {
 		sessions     []*session.Session
 		slotBindings map[int]string
+		repoOrder    map[string]int64
 		warning      string
 		err          error
 	}
@@ -144,7 +145,8 @@ type Home struct {
 	// running. Quit drains both this list and pendingDeletes so an in-flight
 	// kill isn't lost when fleet exits mid-cleanup.
 	finalizingDeletes []PendingDelete
-	pinnedRepos       map[string]bool // pinned repo paths (persist in SQLite)
+	pinnedRepos       map[string]bool  // pinned repo paths (persist in SQLite)
+	repoOrder         map[string]int64 // repo path -> explicit sort key (persist in SQLite); missing = alphabetical fallback
 
 	repoExpanded     map[string]bool // repo path -> expanded state
 	previewCache     map[string]string
@@ -223,6 +225,7 @@ func NewHome(storage *session.StateDB, cfg *config.Config, version string) *Home
 		lastSlotTapSlot:       -1,
 		toasts:                NewToastStack(),
 		pinnedRepos:           make(map[string]bool),
+		repoOrder:             make(map[string]int64),
 		newDialog:             NewNewSessionDialog(),
 		confirmDialog:         NewConfirmDialog(),
 		renameDialog:          NewRenameDialog(),
@@ -684,6 +687,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h.pinnedRepos[p] = true
 			}
 		}
+		// Adopt user-controlled repo order (path → explicit sort_key). Repos absent
+		// from this map sort alphabetically in BuildFlatItems.
+		if msg.repoOrder != nil {
+			h.repoOrder = msg.repoOrder
+		}
 		// Default all repos to expanded on first load.
 		groups := session.GroupByRepo(h.sessions)
 		for repo := range groups {
@@ -1070,6 +1078,12 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.cursor = target
 		h.syncViewport()
 		return h, h.fetchPreviewForSelected()
+	case "shift+down":
+		h.moveCursorItem(1)
+		return h, h.fetchPreviewForSelected()
+	case "shift+up":
+		h.moveCursorItem(-1)
+		return h, h.fetchPreviewForSelected()
 	case "enter":
 		// Toggle repo group or attach session.
 		if h.cursor >= 0 && h.cursor < len(h.flatItems) && h.flatItems[h.cursor].IsRepoHeader {
@@ -1142,6 +1156,15 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				delete(h.pinnedRepos, item.RepoPath)
 				if err := h.storage.UnpinRepo(item.RepoPath); err != nil {
 					debuglog.Logger.Error("failed to unpin repo", "repo", item.RepoPath, "err", err)
+				}
+				// Drop any explicit sidebar ordering for this repo so a future
+				// re-pin/re-add starts from the alphabetical fallback rather
+				// than its old slot.
+				if _, ok := h.repoOrder[item.RepoPath]; ok {
+					delete(h.repoOrder, item.RepoPath)
+					if err := h.storage.DeleteRepoOrder(item.RepoPath); err != nil {
+						debuglog.Logger.Error("failed to delete repo order", "repo", item.RepoPath, "err", err)
+					}
 				}
 				h.actionLog.Add("unpin repo", filepath.Base(item.RepoPath), true)
 				h.rebuildFlatItems()
@@ -2837,6 +2860,197 @@ func (h *Home) unbindSlot(slot int) {
 	h.sidebarDirty = true
 }
 
+// moveCursorItem reorders the item under the cursor within its parent group.
+// dir is +1 for "down" (later in the sidebar) or -1 for "up". Behaviour:
+//
+//   - Session: swap with the adjacent session inside the same repo group.
+//     Top-of-group + dir=-1 and bottom-of-group + dir=+1 are silent no-ops;
+//     reorders never migrate a session across repo boundaries.
+//   - Repo header: swap this repo's position with the neighbouring repo's.
+//     First-repo + dir=-1 and last-repo + dir=+1 are silent no-ops.
+//   - Pending phantom ("Creating…"): silent no-op.
+//   - Filter active: info toast and no mutation (reordering a filtered slice
+//     would rewrite keys for a partial view).
+//
+// All persistence happens synchronously in this handler — matches the
+// BindSlot / PinRepo pattern of writing directly from the UI goroutine.
+func (h *Home) moveCursorItem(dir int) {
+	if h.filterText != "" {
+		h.setInfo("Clear filter (Esc) to reorder")
+		return
+	}
+	if h.cursor < 0 || h.cursor >= len(h.flatItems) {
+		return
+	}
+	item := h.flatItems[h.cursor]
+	switch {
+	case item.Pending != nil:
+		// Phantom workspaces aren't persisted yet; silently ignore.
+		return
+	case item.IsRepoHeader:
+		h.moveRepoGroup(item.RepoPath, dir)
+	case item.Session != nil:
+		h.moveSessionInGroup(item.Session, dir)
+	}
+}
+
+// moveSessionInGroup swaps a session with its same-repo neighbour in the
+// given direction. Out-of-bounds moves are silent (no toast, no log) to match
+// j/k navigation feel.
+func (h *Home) moveSessionInGroup(s *session.Session, dir int) {
+	repo := session.GetRepoRoot(s.ProjectPath)
+	groupSessions := session.GroupByRepo(h.sessions)[repo]
+	idx := -1
+	for i, gs := range groupSessions {
+		if gs.ID == s.ID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	other := idx + dir
+	if other < 0 || other >= len(groupSessions) {
+		return // top/bottom of group — silent no-op, do not migrate across repos
+	}
+
+	a := groupSessions[idx]
+	b := groupSessions[other]
+
+	// Compute sort_keys for the swap. If both are 0 (sentinel — never reordered
+	// before), seed them by their current position so the swap produces a stable
+	// result. Otherwise swap the existing values.
+	keyA, keyB := a.SortKey, b.SortKey
+	if keyA == 0 && keyB == 0 {
+		// Seed using slot positions, spaced so future inserts don't immediately
+		// collide. The "lower index = lower key" mapping mirrors the current
+		// (sort_key=0, created_at) order, then the swap flips them.
+		keyA = int64((idx + 1) * 100)
+		keyB = int64((other + 1) * 100)
+	}
+	// Swap: a takes b's key, b takes a's key.
+	a.SortKey, b.SortKey = keyB, keyA
+
+	if err := h.storage.UpdateSessionSortKey(a.ID, a.SortKey); err != nil {
+		h.setError(fmt.Errorf("reorder session: %w", err))
+		return
+	}
+	if err := h.storage.UpdateSessionSortKey(b.ID, b.SortKey); err != nil {
+		h.setError(fmt.Errorf("reorder session: %w", err))
+		return
+	}
+
+	// Re-sort the in-memory session list so the next rebuildFlatItems sees the
+	// same order LoadSessions would produce after a restart.
+	sort.SliceStable(h.sessions, func(i, j int) bool {
+		if h.sessions[i].SortKey != h.sessions[j].SortKey {
+			return h.sessions[i].SortKey < h.sessions[j].SortKey
+		}
+		return h.sessions[i].CreatedAt.Before(h.sessions[j].CreatedAt)
+	})
+	h.rebuildFlatItems()
+
+	// Re-anchor the cursor to the moved session.
+	for i, it := range h.flatItems {
+		if !it.IsRepoHeader && it.Session != nil && it.Session.ID == a.ID {
+			h.cursor = i
+			break
+		}
+	}
+	h.syncViewport()
+	h.actionLog.Add("reorder session", fmt.Sprintf("%s (%s)", a.Title, dirLabel(dir)), true)
+}
+
+// moveRepoGroup swaps a repo's sidebar position with the neighbour in the given
+// direction. Out-of-bounds moves are silent.
+func (h *Home) moveRepoGroup(repoPath string, dir int) {
+	// Reproduce BuildFlatItems' repo ordering: same set (sessions ∪ pending ∪
+	// pinned), same comparator. This is the authoritative "what's on screen" list.
+	repoSet := make(map[string]struct{})
+	for _, s := range h.sessions {
+		repoSet[session.GetRepoRoot(s.ProjectPath)] = struct{}{}
+	}
+	for _, pw := range h.pendingWorkspaces {
+		repoSet[pw.RepoPath] = struct{}{}
+	}
+	for r := range h.pinnedRepos {
+		repoSet[r] = struct{}{}
+	}
+	repos := make([]string, 0, len(repoSet))
+	for r := range repoSet {
+		repos = append(repos, r)
+	}
+	sort.SliceStable(repos, func(i, j int) bool {
+		ki, kj := h.repoOrder[repos[i]], h.repoOrder[repos[j]]
+		if ki != kj {
+			return ki < kj
+		}
+		return repos[i] < repos[j]
+	})
+
+	idx := -1
+	for i, r := range repos {
+		if r == repoPath {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	other := idx + dir
+	if other < 0 || other >= len(repos) {
+		return // first/last repo — silent no-op
+	}
+
+	repoA := repos[idx]
+	repoB := repos[other]
+
+	// Seed sort_keys for any repo that's still on the alphabetical fallback.
+	// We compute defaults from current positions before the swap so the order
+	// from there forward is fully defined by repo_order alone.
+	keyA, hasA := h.repoOrder[repoA]
+	keyB, hasB := h.repoOrder[repoB]
+	if !hasA || keyA == 0 {
+		keyA = int64((idx + 1) * 100)
+	}
+	if !hasB || keyB == 0 {
+		keyB = int64((other + 1) * 100)
+	}
+	// Swap.
+	h.repoOrder[repoA] = keyB
+	h.repoOrder[repoB] = keyA
+
+	if err := h.storage.UpsertRepoOrder(repoA, keyB); err != nil {
+		h.setError(fmt.Errorf("reorder repo: %w", err))
+		return
+	}
+	if err := h.storage.UpsertRepoOrder(repoB, keyA); err != nil {
+		h.setError(fmt.Errorf("reorder repo: %w", err))
+		return
+	}
+
+	h.rebuildFlatItems()
+
+	// Re-anchor the cursor to the moved repo header.
+	for i, it := range h.flatItems {
+		if it.IsRepoHeader && it.RepoPath == repoA {
+			h.cursor = i
+			break
+		}
+	}
+	h.syncViewport()
+	h.actionLog.Add("reorder repo", fmt.Sprintf("%s (%s)", filepath.Base(repoA), dirLabel(dir)), true)
+}
+
+func dirLabel(dir int) string {
+	if dir < 0 {
+		return "up"
+	}
+	return "down"
+}
+
 // jumpToSlot moves the cursor to the session bound at the given slot.
 // A second press of the same slot within 400ms also attaches.
 func (h *Home) jumpToSlot(slot int) (tea.Model, tea.Cmd) {
@@ -2916,7 +3130,7 @@ func (h *Home) repoInfoFromSnap(snap map[string]*git.RepoInfo) *git.RepoInfo {
 // --- Internal helpers ---
 
 func (h *Home) rebuildFlatItems() {
-	h.flatItems = BuildFlatItems(h.sessions, h.pendingWorkspaces, h.repoExpanded, h.filterText, h.pinnedRepos)
+	h.flatItems = BuildFlatItems(h.sessions, h.pendingWorkspaces, h.repoExpanded, h.filterText, h.pinnedRepos, h.repoOrder)
 	h.sidebarDirty = true
 }
 
@@ -3036,6 +3250,12 @@ func (h *Home) loadSessions() tea.Msg {
 		slotBindings = map[int]string{}
 	}
 
+	repoOrder, err := h.storage.LoadRepoOrder()
+	if err != nil {
+		debuglog.Logger.Error("failed to load repo order", "err", err)
+		repoOrder = map[string]int64{}
+	}
+
 	// These block but run in the tea.Cmd goroutine, not Update().
 	configDir := hooks.GetClaudeConfigDir()
 	hooks.InjectClaudeHooks(configDir)
@@ -3047,7 +3267,7 @@ func (h *Home) loadSessions() tea.Msg {
 		warning = "claude CLI not found — install Claude Code to create sessions"
 	}
 
-	return loadSessionsMsg{sessions: sessions, slotBindings: slotBindings, warning: warning}
+	return loadSessionsMsg{sessions: sessions, slotBindings: slotBindings, repoOrder: repoOrder, warning: warning}
 }
 
 func (h *Home) setError(err error) {

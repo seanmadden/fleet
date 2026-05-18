@@ -32,6 +32,7 @@ type SessionRow struct {
 	FirstPrompt     string
 	TitleGenerated  bool
 	PromptCount     int
+	SortKey         int64
 }
 
 // DefaultDBPath returns the default database path.
@@ -152,6 +153,18 @@ func (s *StateDB) migrate() error {
 		}
 	}
 
+	// Add sort_key column if missing. Default 0 means "no explicit order" — rows
+	// tie on sort_key and fall through to created_at, matching the pre-feature
+	// load order so existing installations don't see their sidebar reshuffle on
+	// upgrade. Non-zero keys are seeded the first time a user reorders a pair.
+	if !s.hasColumn("sessions", "sort_key") {
+		_, err = s.db.Exec(`ALTER TABLE sessions ADD COLUMN sort_key INTEGER NOT NULL DEFAULT 0`)
+		if err != nil {
+			debuglog.Logger.Error("migration failed: add sort_key column", "error", err)
+			return err
+		}
+	}
+
 	_, err = s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS slot_bindings (
 			slot_number INTEGER PRIMARY KEY CHECK (slot_number BETWEEN 0 AND 9),
@@ -168,6 +181,18 @@ func (s *StateDB) migrate() error {
 	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS pinned_repos (repo_path TEXT PRIMARY KEY)`)
 	if err != nil {
 		debuglog.Logger.Error("migration failed: create pinned_repos table", "error", err)
+		return err
+	}
+
+	// Repo order table for user-controlled sidebar group ordering. Repos absent
+	// from this table fall back to alphabetical (matching pre-feature behaviour);
+	// the first user reorder seeds the affected pair with explicit keys.
+	_, err = s.db.Exec(`CREATE TABLE IF NOT EXISTS repo_order (
+		repo_path TEXT PRIMARY KEY,
+		sort_key  INTEGER NOT NULL
+	)`)
+	if err != nil {
+		debuglog.Logger.Error("migration failed: create repo_order table", "error", err)
 		return err
 	}
 
@@ -199,14 +224,14 @@ func (s *StateDB) hasColumn(table, column string) bool {
 // SaveSession inserts or replaces a session row.
 func (s *StateDB) SaveSession(row *SessionRow) error {
 	_, err := s.db.Exec(`
-		INSERT OR REPLACE INTO sessions (id, title, project_path, status, tmux_session, created_at, last_accessed, acknowledged, claude_session_id, workspace_name, manually_renamed, first_prompt, title_generated, prompt_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT OR REPLACE INTO sessions (id, title, project_path, status, tmux_session, created_at, last_accessed, acknowledged, claude_session_id, workspace_name, manually_renamed, first_prompt, title_generated, prompt_count, sort_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		row.ID, row.Title, row.ProjectPath, row.Status, row.TmuxSession,
 		row.CreatedAt.Unix(), row.LastAccessed.Unix(), boolToInt(row.Acknowledged),
 		row.ClaudeSessionID, row.WorkspaceName,
 		boolToInt(row.ManuallyRenamed), row.FirstPrompt, boolToInt(row.TitleGenerated),
-		row.PromptCount,
+		row.PromptCount, row.SortKey,
 	)
 	if err != nil {
 		debuglog.Logger.Error("failed to save session", "id", row.ID, "error", err)
@@ -214,11 +239,13 @@ func (s *StateDB) SaveSession(row *SessionRow) error {
 	return err
 }
 
-// LoadSessions returns all sessions ordered by creation time.
+// LoadSessions returns all sessions ordered by (sort_key, created_at). Rows
+// with the default sort_key of 0 tie and fall through to created_at, so
+// pre-feature databases load in the same order as before.
 func (s *StateDB) LoadSessions() ([]*SessionRow, error) {
 	rows, err := s.db.Query(`
-		SELECT id, title, project_path, status, tmux_session, created_at, last_accessed, acknowledged, claude_session_id, workspace_name, manually_renamed, first_prompt, title_generated, prompt_count
-		FROM sessions ORDER BY created_at
+		SELECT id, title, project_path, status, tmux_session, created_at, last_accessed, acknowledged, claude_session_id, workspace_name, manually_renamed, first_prompt, title_generated, prompt_count, sort_key
+		FROM sessions ORDER BY sort_key, created_at
 	`)
 	if err != nil {
 		debuglog.Logger.Error("failed to query sessions", "error", err)
@@ -231,7 +258,7 @@ func (s *StateDB) LoadSessions() ([]*SessionRow, error) {
 		var r SessionRow
 		var createdAt, lastAccessed int64
 		var ack, manuallyRenamed, titleGenerated int
-		if err := rows.Scan(&r.ID, &r.Title, &r.ProjectPath, &r.Status, &r.TmuxSession, &createdAt, &lastAccessed, &ack, &r.ClaudeSessionID, &r.WorkspaceName, &manuallyRenamed, &r.FirstPrompt, &titleGenerated, &r.PromptCount); err != nil {
+		if err := rows.Scan(&r.ID, &r.Title, &r.ProjectPath, &r.Status, &r.TmuxSession, &createdAt, &lastAccessed, &ack, &r.ClaudeSessionID, &r.WorkspaceName, &manuallyRenamed, &r.FirstPrompt, &titleGenerated, &r.PromptCount, &r.SortKey); err != nil {
 			debuglog.Logger.Error("failed to scan session row", "error", err)
 			return nil, err
 		}
@@ -436,6 +463,61 @@ func (s *StateDB) LoadPinnedRepos() ([]string, error) {
 		repos = append(repos, path)
 	}
 	return repos, rows.Err()
+}
+
+// UpdateSessionSortKey sets the sort_key for a session. Used by the sidebar
+// reorder shortcut to persist explicit ordering. Sessions with sort_key 0
+// (the default) sort by created_at, matching legacy behaviour.
+func (s *StateDB) UpdateSessionSortKey(id string, key int64) error {
+	_, err := s.db.Exec("UPDATE sessions SET sort_key = ? WHERE id = ?", key, id)
+	if err != nil {
+		debuglog.Logger.Error("failed to update session sort_key", "id", id, "sort_key", key, "error", err)
+	}
+	return err
+}
+
+// UpsertRepoOrder sets the sort_key for a repo path (insert if missing).
+func (s *StateDB) UpsertRepoOrder(repoPath string, key int64) error {
+	_, err := s.db.Exec(`
+		INSERT INTO repo_order (repo_path, sort_key) VALUES (?, ?)
+		ON CONFLICT(repo_path) DO UPDATE SET sort_key = excluded.sort_key
+	`, repoPath, key)
+	if err != nil {
+		debuglog.Logger.Error("failed to upsert repo_order", "repo", repoPath, "sort_key", key, "error", err)
+	}
+	return err
+}
+
+// DeleteRepoOrder removes a repo's explicit ordering (falls back to alphabetical).
+func (s *StateDB) DeleteRepoOrder(repoPath string) error {
+	_, err := s.db.Exec("DELETE FROM repo_order WHERE repo_path = ?", repoPath)
+	if err != nil {
+		debuglog.Logger.Error("failed to delete repo_order", "repo", repoPath, "error", err)
+	}
+	return err
+}
+
+// LoadRepoOrder returns the repo_path → sort_key map for user-ordered repos.
+// Repos absent from the map sort alphabetically (legacy behaviour).
+func (s *StateDB) LoadRepoOrder() (map[string]int64, error) {
+	rows, err := s.db.Query("SELECT repo_path, sort_key FROM repo_order")
+	if err != nil {
+		debuglog.Logger.Error("failed to load repo_order", "error", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var path string
+		var key int64
+		if err := rows.Scan(&path, &key); err != nil {
+			debuglog.Logger.Error("failed to scan repo_order row", "error", err)
+			return nil, err
+		}
+		out[path] = key
+	}
+	return out, rows.Err()
 }
 
 func boolToInt(b bool) int {
