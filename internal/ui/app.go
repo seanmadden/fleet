@@ -835,12 +835,16 @@ func (h *Home) renderBody() string {
 
 	var b strings.Builder
 
-	// Snapshot gitInfoCache under lock — the worker goroutine writes to
-	// it concurrently, and View() must not read the live map without a lock.
+	// Snapshot gitInfoCache + sessionGitInfo under lock — the worker goroutine
+	// writes to both concurrently, and View() must not read them without the lock.
 	h.workerMu.Lock()
 	gitInfoSnap := make(map[string]*git.RepoInfo, len(h.gitInfoCache))
 	for k, v := range h.gitInfoCache {
 		gitInfoSnap[k] = v
+	}
+	sessionInfoSnap := make(map[string]*git.RepoInfo, len(h.sessionGitInfo))
+	for k, v := range h.sessionGitInfo {
+		sessionInfoSnap[k] = v
 	}
 	h.workerMu.Unlock()
 
@@ -857,7 +861,7 @@ func (h *Home) renderBody() string {
 
 	switch h.layoutMode() {
 	case "single":
-		sidebar := RenderSidebar(h.flatItems, h.sessions, gitInfoSnap, h.slotBindings, h.cursor, h.viewOffset, h.width, contentHeight)
+		sidebar := RenderSidebar(h.flatItems, h.sessions, gitInfoSnap, sessionInfoSnap, h.slotBindings, h.cursor, h.viewOffset, h.width, contentHeight)
 		b.WriteString(sidebar)
 	case "stacked":
 		sidebarHeight := (contentHeight * 55) / 100
@@ -865,7 +869,7 @@ func (h *Home) renderBody() string {
 			sidebarHeight = 3
 		}
 		previewHeight := contentHeight - sidebarHeight - 1 // 1 for separator
-		sidebar := RenderSidebar(h.flatItems, h.sessions, gitInfoSnap, h.slotBindings, h.cursor, h.viewOffset, h.width, sidebarHeight)
+		sidebar := RenderSidebar(h.flatItems, h.sessions, gitInfoSnap, sessionInfoSnap, h.slotBindings, h.cursor, h.viewOffset, h.width, sidebarHeight)
 		b.WriteString(sidebar)
 		b.WriteString("\n")
 		b.WriteString(DimStyle.Render(strings.Repeat("─", h.width)))
@@ -885,7 +889,7 @@ func (h *Home) renderBody() string {
 		if h.focusMode && !h.sidebarDirty && h.cachedSidebar != "" {
 			leftPanel = h.cachedSidebar
 		} else {
-			leftPanel = RenderSidebar(h.flatItems, h.sessions, gitInfoSnap, h.slotBindings, h.cursor, h.viewOffset, sidebarWidth, contentHeight)
+			leftPanel = RenderSidebar(h.flatItems, h.sessions, gitInfoSnap, sessionInfoSnap, h.slotBindings, h.cursor, h.viewOffset, sidebarWidth, contentHeight)
 			leftPanel = ensureExactHeight(leftPanel, contentHeight)
 			leftPanel = ensureExactWidth(leftPanel, sidebarWidth)
 			h.cachedSidebar = leftPanel
@@ -2127,11 +2131,21 @@ func (h *Home) openPRInBrowser() tea.Cmd {
 		return nil
 	}
 
-	// PR info is keyed by main repo (gitInfoCache); translate the cursor-local
-	// repo path to ensure worktree-session callers find the group's PR.
+	// Prefer the selected worktree-session's own PR (e.g. an MR opened for
+	// `claude/foo`) over the group header's PR (which tracks the main repo's
+	// current branch). Falls back to the header when no session is selected
+	// or the per-session PR hasn't been fetched yet.
 	mainRepo := session.GetMainRepo(repo)
+	var info *git.RepoInfo
 	h.workerMu.Lock()
-	info := h.gitInfoCache[mainRepo]
+	if s := h.selectedSession(); s != nil {
+		if si, ok := h.sessionGitInfo[s.ID]; ok && si != nil && si.PR != nil && si.PR.URL != "" {
+			info = si
+		}
+	}
+	if info == nil {
+		info = h.gitInfoCache[mainRepo]
+	}
 	h.workerMu.Unlock()
 	if info == nil || info.PR == nil || info.PR.URL == "" {
 		debuglog.Logger.Debug("openPR: no PR for branch", "repo", repo)
