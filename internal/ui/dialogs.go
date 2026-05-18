@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -16,6 +17,15 @@ type sessionCreateMsg struct {
 	path          string
 	title         string
 	workspaceName string
+}
+
+// newSessionRequestMsg is dispatched from the path-picker (palette-only "New
+// Session at Path") when the picked path is itself a git repo. The app turns
+// it into a workspaceCreateMsg so the path-picker entry produces the same
+// worktree-by-default flow as pressing `n`. Non-git paths bypass this and emit
+// sessionCreateMsg directly for the no-worktree fallback.
+type newSessionRequestMsg struct {
+	path string
 }
 
 // forkSessionMsg is sent when the user forks an existing session.
@@ -107,6 +117,14 @@ func (d *NewSessionDialog) Update(msg tea.Msg) (*NewSessionDialog, tea.Cmd) {
 
 			title := filepath.Base(path)
 			d.Hide()
+			// Worktree-by-default: if the picked path is a git repo, hand it
+			// to the per-session-worktree pipeline (n key uses the same
+			// dispatcher). Non-git paths fall back to the no-worktree session.
+			if isGitWorkTree(path) {
+				return d, func() tea.Msg {
+					return newSessionRequestMsg{path: path}
+				}
+			}
 			return d, func() tea.Msg {
 				return sessionCreateMsg{path: path, title: title}
 			}
@@ -263,6 +281,19 @@ func (d *NewSessionDialog) View() string {
 
 	// Center vertically and horizontally.
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// isGitWorkTree reports whether path is inside a git working tree (regular
+// repo or linked worktree). Used by the path-picker to decide between the
+// worktree-by-default flow (newSessionRequestMsg) and the no-worktree fallback
+// (sessionCreateMsg).
+func isGitWorkTree(path string) bool {
+	cmd := exec.Command("git", "-C", path, "rev-parse", "--is-inside-work-tree")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "true"
 }
 
 func (d *NewSessionDialog) expandPath(path string) string {

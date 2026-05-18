@@ -2,11 +2,13 @@ package ui
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -153,9 +155,17 @@ type Home struct {
 	previewCacheTime map[string]time.Time
 	statusRRIndex    int // round-robin index for status updates
 
-	gitInfoCache map[string]*git.RepoInfo  // repo root path -> git info
+	gitInfoCache map[string]*git.RepoInfo  // main repo path -> git info (drives group headers)
 	gitRRIndex   int                       // round-robin index for git refresh
-	repoForge    map[string]forge.Provider // repo root path -> forge provider (nil = none); worker-only, populated lazily
+	repoForge    map[string]forge.Provider // main repo path -> forge provider (nil = none); worker-only, populated lazily
+
+	// Per-session git info — drives the worktree-aware sidebar row info (own
+	// branch + dirty + PR). Keyed by session ID rather than repo path because
+	// each worktree-session has its own branch/PR pairing distinct from the
+	// main-repo header above it. Populated by a separate worker round-robin
+	// that skips no-worktree sessions (where GetRepoRoot == GetMainRepo).
+	sessionGitInfo    map[string]*git.RepoInfo
+	sessionGitRRIndex int
 
 	hookWatcher *hooks.HookWatcher
 
@@ -240,6 +250,7 @@ func NewHome(storage *session.StateDB, cfg *config.Config, version string) *Home
 		previewCacheTime:      make(map[string]time.Time),
 		gitInfoCache:          make(map[string]*git.RepoInfo),
 		repoForge:             make(map[string]forge.Provider),
+		sessionGitInfo:        make(map[string]*git.RepoInfo),
 		filterInput:           fi,
 		cfg:                   cfg,
 		version:               version,
@@ -335,6 +346,12 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionCreateMsg:
 		return h.handleSessionCreate(msg)
+
+	case newSessionRequestMsg:
+		// Dispatched from the path-picker dialog (palette-only "New Session at
+		// Path") when the user picks an existing git repo. Mirrors the `n` key
+		// path so both entry points produce the same worktree-by-default flow.
+		return h.startWorktreeSessionForRepo(msg.path)
 
 	case forkSessionMsg:
 		s := session.NewSession(msg.title, msg.path)
@@ -692,6 +709,13 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.repoOrder != nil {
 			h.repoOrder = msg.repoOrder
 		}
+		// Pinned-repo migration (per-session-worktrees): pre-feature, fleet
+		// pinned the *worktree* path on session create. Post-feature, sessions
+		// group by main repo, so a worktree pin would surface as its own empty
+		// (or worse, duplicated) group. Re-key any worktree-rooted pins to the
+		// main repo. Idempotent: re-runs on each restart but only writes when
+		// it finds something to migrate.
+		h.migrateWorktreePinsToMainRepo()
 		// Default all repos to expanded on first load.
 		groups := session.GroupByRepo(h.sessions)
 		for repo := range groups {
@@ -1134,18 +1158,10 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			title: repoName,
 		})
 	case "n":
-		// New session at any repo path.
-		h.newDialog.Show()
-		return h, nil
-	case "w":
-		// New worktree session.
-		repoPath := h.resolveCurrentRepo()
-		if repoPath == "" {
-			h.setError(fmt.Errorf("no repo selected"))
-			return h, nil
-		}
-		h.worktreeDialog.ShowLoading()
-		return h, tea.Batch(h.fetchWorkspaceListForRepo(repoPath), spinnerTickCmd)
+		// Worktree-by-default: spin up a `claude/<8hex>` worktree in the repo
+		// at the cursor without any dialog. The historic path-picker lives on
+		// in the palette as "New Session at Path".
+		return h.startWorktreeSessionAtCursor()
 	case "f":
 		return h, h.forkSelected()
 	case "d":
@@ -1389,6 +1405,103 @@ func (a attachCmd) SetStdin(r io.Reader)  {}
 func (a attachCmd) SetStdout(w io.Writer) {}
 func (a attachCmd) SetStderr(w io.Writer) {}
 
+// claudeBranchExisting is the regexp shape of a fleet-managed branch that
+// hasn't been renamed yet — `claude/<8 lowercase hex>`. The auto-name worker
+// uses this to decide whether to attempt a `git branch -m` to `claude/<slug>`.
+var claudeBranchExistingRE = regexp.MustCompile(`^claude/[0-9a-f]{8}$`)
+
+// startWorktreeSessionAtCursor handles the `n` key: resolves the repo at the
+// cursor (using cursor-locality semantics) and dispatches a workspaceCreateMsg
+// for a `claude/<8hex>` worktree against the main repo. If the cursor isn't on
+// anything resolvable (e.g. empty sidebar), falls back to the path-picker.
+func (h *Home) startWorktreeSessionAtCursor() (tea.Model, tea.Cmd) {
+	repo := h.resolveCurrentRepo()
+	if repo == "" {
+		// No cursor target — show the path-picker so the user can type a path.
+		h.newDialog.Show()
+		return h, nil
+	}
+	return h.startWorktreeSessionForRepo(repo)
+}
+
+// startWorktreeSessionForRepo creates an instant worktree-backed session for
+// the given repo path (which may be either the main repo or any worktree
+// underneath it — GetMainRepo normalises). Generates a `claude/<8hex>` branch
+// with a collision check, then drops through to the existing workspaceCreateMsg
+// pipeline (phantom entry, background create, sessionCreate on success).
+func (h *Home) startWorktreeSessionForRepo(repo string) (tea.Model, tea.Cmd) {
+	mainRepo := session.GetMainRepo(repo)
+	if mainRepo == "" {
+		mainRepo = repo
+	}
+
+	// Non-git path → fall back to the no-worktree session (matches the
+	// dialog's own fallback when the path isn't a git work tree).
+	if !isGitWorkTree(mainRepo) {
+		h.actionLog.Add("create session", mainRepo, true)
+		return h.handleSessionCreate(sessionCreateMsg{
+			path:  mainRepo,
+			title: filepath.Base(mainRepo),
+		})
+	}
+
+	hex, err := randHex8()
+	if err != nil {
+		h.setError(fmt.Errorf("worktree create: %w", err))
+		return h, nil
+	}
+	branch := "claude/" + hex
+	name := "claude-" + hex
+
+	// Branch collision check — re-roll up to 4 times then suffix `-1`..`-5`.
+	branch = ensureFreshBranch(mainRepo, branch)
+
+	provider := workspace.ResolveProvider(mainRepo)
+	if provider == nil {
+		h.setError(fmt.Errorf("no workspace provider for repo"))
+		return h, nil
+	}
+	h.actionLog.Add("create worktree session", branch, true)
+	return h, func() tea.Msg {
+		return workspaceCreateMsg{
+			name:       name,
+			branch:     branch,
+			baseBranch: "", // current HEAD — git worktree add defaults to it
+			repoPath:   mainRepo,
+			provider:   provider,
+		}
+	}
+}
+
+// ensureFreshBranch returns the first branch name from {branch, branch+"-1",
+// …, branch+"-5"} that doesn't already exist as a local ref. If all five are
+// taken, returns the last candidate anyway and lets `git worktree add` surface
+// the error to the user. Cheap operation: each probe is `git show-ref --verify`,
+// returning instantly when the ref doesn't exist.
+func ensureFreshBranch(repoPath, branch string) string {
+	candidate := branch
+	for i := 1; i <= 5; i++ {
+		cmd := exec.Command("git", "-C", repoPath, "show-ref", "--verify", "--quiet", "refs/heads/"+candidate)
+		if err := cmd.Run(); err != nil {
+			// Non-zero exit (or command failure) → ref doesn't exist → free.
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s-%d", branch, i)
+	}
+	return candidate
+}
+
+// randHex8 returns 4 random bytes encoded as 8 lowercase hex characters.
+// Used for the `claude/<8hex>` branch name. Mirrors generateID's hex-of-4-bytes
+// pattern so the namespace is consistent across fleet's own ID generation.
+func randHex8() (string, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", b), nil
+}
+
 func (h *Home) handleSessionCreate(msg sessionCreateMsg) (tea.Model, tea.Cmd) {
 	if _, err := exec.LookPath("claude"); err != nil {
 		h.setError(fmt.Errorf("claude CLI not found — install Claude Code to create sessions"))
@@ -1426,8 +1539,10 @@ func (h *Home) handleSessionCreateResult(msg sessionCreateResultMsg) (tea.Model,
 	h.rebuildSessionMap()
 	h.workerMu.Unlock()
 
-	// Ensure the repo group is expanded for the new session and pin it.
-	repo := session.GetRepoRoot(s.ProjectPath)
+	// Ensure the repo group is expanded for the new session and pin the main
+	// repo (so worktree sessions don't pin their own worktree path — they
+	// group under the main repo above them).
+	repo := session.GetMainRepo(s.ProjectPath)
 	h.repoExpanded[repo] = true
 	if !h.pinnedRepos[repo] {
 		h.pinnedRepos[repo] = true
@@ -1602,7 +1717,9 @@ func (h *Home) expandRepoAtCursor() {
 	if item.IsRepoHeader {
 		repo = item.RepoPath
 	} else if item.Session != nil {
-		repo = session.GetRepoRoot(item.Session.ProjectPath)
+		// Sidebar headers key off the main repo (GroupByRepo) — translate the
+		// session's project path so the expanded-state lookup matches.
+		repo = session.GetMainRepo(item.Session.ProjectPath)
 	} else {
 		return
 	}
@@ -1623,7 +1740,7 @@ func (h *Home) collapseRepoAtCursor() {
 	if item.IsRepoHeader {
 		repo = item.RepoPath
 	} else if item.Session != nil {
-		repo = session.GetRepoRoot(item.Session.ProjectPath)
+		repo = session.GetMainRepo(item.Session.ProjectPath)
 	} else {
 		return
 	}
@@ -2010,8 +2127,11 @@ func (h *Home) openPRInBrowser() tea.Cmd {
 		return nil
 	}
 
+	// PR info is keyed by main repo (gitInfoCache); translate the cursor-local
+	// repo path to ensure worktree-session callers find the group's PR.
+	mainRepo := session.GetMainRepo(repo)
 	h.workerMu.Lock()
-	info := h.gitInfoCache[repo]
+	info := h.gitInfoCache[mainRepo]
 	h.workerMu.Unlock()
 	if info == nil || info.PR == nil || info.PR.URL == "" {
 		debuglog.Logger.Debug("openPR: no PR for branch", "repo", repo)
@@ -2020,7 +2140,7 @@ func (h *Home) openPRInBrowser() tea.Cmd {
 	}
 
 	prURL := info.PR.URL
-	repoName := filepath.Base(repo)
+	repoName := filepath.Base(mainRepo)
 
 	return func() tea.Msg {
 		// Try Chrome extension first.
@@ -2087,6 +2207,11 @@ func (h *Home) deferDelete(msg sessionDeleteMsg) (tea.Model, tea.Cmd) {
 			h.lastSlotTapSlot = -1
 		}
 	}
+
+	// Drop per-session git info (worker will not re-populate after delete).
+	h.workerMu.Lock()
+	delete(h.sessionGitInfo, msg.id)
+	h.workerMu.Unlock()
 
 	// Remove from in-memory session list.
 	var remaining []*session.Session
@@ -2291,11 +2416,15 @@ func (h *Home) buildUndoFlashMessage() string {
 	return fmt.Sprintf("Deleted %q. z to undo (%d pending)", title, n)
 }
 
-// countSessionsForRepo counts live sessions for a given repo path.
+// countSessionsForRepo counts live sessions belonging to the given repo group.
+// The input is normalised to its main repo so callers can pass either a
+// worktree path or the main repo and get the same answer — sessions group by
+// main repo in the sidebar.
 func (h *Home) countSessionsForRepo(repoPath string) int {
+	main := session.GetMainRepo(repoPath)
 	count := 0
 	for _, s := range h.sessions {
-		if session.GetRepoRoot(s.ProjectPath) == repoPath {
+		if session.GetMainRepo(s.ProjectPath) == main {
 			count++
 		}
 	}
@@ -2593,14 +2722,120 @@ drainPriority:
 
 		h.gitRRIndex++
 	}
+
+	// 6. Per-session git info refresh: 1 worktree-session per cycle. Skips
+	// no-worktree sessions (GetRepoRoot == GetMainRepo) — those inherit the
+	// group header's info and don't need their own row chrome.
+	worktreeSessions := make([]*session.Session, 0, len(sessions))
+	for _, s := range sessions {
+		if session.GetRepoRoot(s.ProjectPath) != session.GetMainRepo(s.ProjectPath) {
+			worktreeSessions = append(worktreeSessions, s)
+		}
+	}
+	if len(worktreeSessions) > 0 {
+		idx := h.sessionGitRRIndex % len(worktreeSessions)
+		s := worktreeSessions[idx]
+		repoPath := s.ProjectPath // worktree path — git commands run inside the worktree
+		mainRepo := session.GetMainRepo(repoPath)
+
+		info := git.RefreshGitInfo(repoPath)
+
+		// Preserve prior PR unless TTL expired (60s) — matches the group cadence.
+		h.workerMu.Lock()
+		if old, ok := h.sessionGitInfo[s.ID]; ok && old.PR != nil {
+			info.PR = old.PR
+			info.LastPRRefresh = old.LastPRRefresh
+		}
+		h.workerMu.Unlock()
+
+		// Forge provider is keyed by main repo: a worktree shares its main
+		// repo's origin, so the cached lookup is correct.
+		provider, seen := h.repoForge[mainRepo]
+		if !seen {
+			provider = detectForge(mainRepo)
+			h.repoForge[mainRepo] = provider
+		}
+		if provider != nil && (info.LastPRRefresh.IsZero() || time.Since(info.LastPRRefresh) > 60*time.Second) {
+			// IgnorePatterns reads .fleet.json — read it from the worktree so
+			// per-worktree overrides work, but if absent the main-repo file
+			// still applies via fleet's existing merge in ResolveConfig.
+			git.RefreshPRInfo(info, repoPath, workspace.IgnorePatterns(repoPath), provider)
+		}
+
+		h.workerMu.Lock()
+		h.sessionGitInfo[s.ID] = info
+		h.workerMu.Unlock()
+
+		h.sessionGitRRIndex++
+	}
+
+	// 7. Branch auto-rename: if the just-titled session is on a placeholder
+	// `claude/<8hex>` branch, rename to `claude/<slug>` to make the branch
+	// readable in `git log` and PR pages. The auto-name worker (above) sets
+	// TitleGenerated once per session, so this block also fires at most once
+	// per session — we don't keep churning the branch every prompt.
+	if h.cfg.IsAutoNameEnabled() {
+		for _, s := range sessions {
+			if s.WorkspaceName == "" || !s.TitleGenerated || s.Title == "" || s.ManuallyRenamed {
+				continue
+			}
+			// Need the current branch — read it from sessionGitInfo under lock.
+			// If not yet populated, skip and retry next cycle: TitleGenerated is
+			// sticky, so the rename eventually catches up.
+			h.workerMu.Lock()
+			si := h.sessionGitInfo[s.ID]
+			h.workerMu.Unlock()
+			if si == nil || si.Branch == "" {
+				continue
+			}
+			if !claudeBranchExistingRE.MatchString(si.Branch) {
+				continue // already renamed or never auto-created
+			}
+			slug := naming.BranchSlug(s.Title)
+			if slug == "" {
+				continue
+			}
+			newBranch := "claude/" + slug
+			if newBranch == si.Branch {
+				continue
+			}
+			renamed := false
+			for attempt := 0; attempt < 5; attempt++ {
+				candidate := newBranch
+				if attempt > 0 {
+					candidate = fmt.Sprintf("%s-%d", newBranch, attempt+1)
+				}
+				if err := git.RenameBranch(s.ProjectPath, si.Branch, candidate); err != nil {
+					if strings.Contains(strings.ToLower(err.Error()), "already exists") {
+						continue
+					}
+					debuglog.Logger.Debug("branch rename failed", "id", s.ID, "old", si.Branch, "new", candidate, "err", err)
+					break
+				}
+				renamed = true
+				debuglog.Logger.Info("branch renamed", "id", s.ID, "old", si.Branch, "new", candidate)
+				break
+			}
+			if renamed {
+				// Invalidate so next per-session tick re-fetches branch + PR mapping.
+				h.workerMu.Lock()
+				delete(h.sessionGitInfo, s.ID)
+				h.workerMu.Unlock()
+				break // one rename per cycle keeps the worker cheap
+			}
+		}
+	}
 }
 
-// uniqueRepoPathsFromSessions returns distinct repo root paths from the given sessions.
+// uniqueRepoPathsFromSessions returns distinct main-repo paths from the given
+// sessions. The git-info round-robin uses main-repo keys so the group header
+// reflects the main checkout's branch/dirty/PR — worktree-session rows show
+// their own info via the per-session round-robin below.
 func (h *Home) uniqueRepoPathsFromSessions(sessions []*session.Session) []string {
 	seen := make(map[string]bool)
 	var repos []string
 	for _, s := range sessions {
-		root := session.GetRepoRoot(s.ProjectPath)
+		root := session.GetMainRepo(s.ProjectPath)
 		if !seen[root] {
 			seen[root] = true
 			repos = append(repos, root)
@@ -2898,7 +3133,9 @@ func (h *Home) moveCursorItem(dir int) {
 // given direction. Out-of-bounds moves are silent (no toast, no log) to match
 // j/k navigation feel.
 func (h *Home) moveSessionInGroup(s *session.Session, dir int) {
-	repo := session.GetRepoRoot(s.ProjectPath)
+	// GroupByRepo now keys by main repo, so look up the group via main repo
+	// regardless of whether the session lives in a worktree or the main repo.
+	repo := session.GetMainRepo(s.ProjectPath)
 	groupSessions := session.GroupByRepo(h.sessions)[repo]
 	idx := -1
 	for i, gs := range groupSessions {
@@ -2967,9 +3204,11 @@ func (h *Home) moveSessionInGroup(s *session.Session, dir int) {
 func (h *Home) moveRepoGroup(repoPath string, dir int) {
 	// Reproduce BuildFlatItems' repo ordering: same set (sessions ∪ pending ∪
 	// pinned), same comparator. This is the authoritative "what's on screen" list.
+	// BuildFlatItems groups sessions by main repo, so use the main repo here too
+	// — otherwise worktree-rooted sessions would split into phantom rows.
 	repoSet := make(map[string]struct{})
 	for _, s := range h.sessions {
-		repoSet[session.GetRepoRoot(s.ProjectPath)] = struct{}{}
+		repoSet[session.GetMainRepo(s.ProjectPath)] = struct{}{}
 	}
 	for _, pw := range h.pendingWorkspaces {
 		repoSet[pw.RepoPath] = struct{}{}
@@ -3068,7 +3307,8 @@ func (h *Home) jumpToSlot(slot int) (tea.Model, tea.Cmd) {
 	}
 
 	// Expand the repo group if collapsed, so the session is visible and selectable.
-	repo := session.GetRepoRoot(s.ProjectPath)
+	// The repoExpanded map is keyed by main-repo path (matches BuildFlatItems).
+	repo := session.GetMainRepo(s.ProjectPath)
 	if !h.repoExpanded[repo] {
 		h.repoExpanded[repo] = true
 		h.rebuildFlatItems()
@@ -3119,12 +3359,15 @@ func (h *Home) selectedPreview() (*session.Session, string) {
 
 // repoInfoFromSnap returns repo info for the selected session using a snapshot
 // of gitInfoCache. Safe to call from View() without holding workerMu.
+// gitInfoCache is keyed by main-repo path (see uniqueRepoPathsFromSessions);
+// translate the session's project path so worktree sessions still find their
+// group's repo info.
 func (h *Home) repoInfoFromSnap(snap map[string]*git.RepoInfo) *git.RepoInfo {
 	s := h.selectedSession()
 	if s == nil {
 		return nil
 	}
-	return snap[session.GetRepoRoot(s.ProjectPath)]
+	return snap[session.GetMainRepo(s.ProjectPath)]
 }
 
 // --- Internal helpers ---
@@ -3221,6 +3464,57 @@ func (h *Home) syncViewport() {
 	}
 }
 
+// migrateWorktreePinsToMainRepo rewrites any pinned repo path that is itself a
+// linked worktree to its main repo. Same for repoOrder. Pre-feature, fleet's
+// pin path matched session.GetRepoRoot (the worktree); post-feature, sessions
+// group under their main repo, so a worktree pin would either dangle (no
+// sessions show under it) or split a group in two.
+//
+// Idempotent: runs every loadSessions, only writes when something changes.
+// Both maps are de-duped so re-pinning under the main repo doesn't double-up.
+func (h *Home) migrateWorktreePinsToMainRepo() {
+	// Snapshot current keys so we can mutate during iteration safely.
+	pins := make([]string, 0, len(h.pinnedRepos))
+	for p := range h.pinnedRepos {
+		pins = append(pins, p)
+	}
+	for _, p := range pins {
+		if !git.IsWorktree(p) {
+			continue
+		}
+		mp := session.GetMainRepo(p)
+		if mp == "" || mp == p {
+			continue
+		}
+		// Re-pin under main repo (if not already pinned), unpin worktree.
+		if !h.pinnedRepos[mp] {
+			h.pinnedRepos[mp] = true
+			if err := h.storage.PinRepo(mp); err != nil {
+				debuglog.Logger.Error("migrate pin: PinRepo main failed", "main", mp, "err", err)
+			}
+		}
+		delete(h.pinnedRepos, p)
+		if err := h.storage.UnpinRepo(p); err != nil {
+			debuglog.Logger.Error("migrate pin: UnpinRepo worktree failed", "worktree", p, "err", err)
+		}
+		// Carry repoOrder across if the worktree had an explicit key and the
+		// main repo doesn't (otherwise keep the main repo's existing key).
+		if wk, hasW := h.repoOrder[p]; hasW {
+			if _, hasM := h.repoOrder[mp]; !hasM {
+				h.repoOrder[mp] = wk
+				if err := h.storage.UpsertRepoOrder(mp, wk); err != nil {
+					debuglog.Logger.Error("migrate pin: UpsertRepoOrder main failed", "main", mp, "err", err)
+				}
+			}
+			delete(h.repoOrder, p)
+			if err := h.storage.DeleteRepoOrder(p); err != nil {
+				debuglog.Logger.Error("migrate pin: DeleteRepoOrder worktree failed", "worktree", p, "err", err)
+			}
+		}
+		debuglog.Logger.Info("migrated pin from worktree to main", "from", p, "to", mp)
+	}
+}
+
 func (h *Home) loadSessions() tea.Msg {
 	rows, err := h.storage.LoadSessions()
 	if err != nil {
@@ -3295,8 +3589,9 @@ func (h *Home) buildPaletteCommands() []PaletteCommand {
 		{ID: "focus", Name: "Focus Preview", Shortcut: "Tab"},
 		{ID: "jump_next", Name: "Jump to Next Waiting", Shortcut: "Space"},
 		{ID: "new_session", Name: "New Session", Shortcut: "a"},
-		{ID: "new_repo", Name: "New Session (Any Repo)", Shortcut: "n"},
-		{ID: "new_worktree", Name: "New Worktree Session", Shortcut: "w"},
+		{ID: "new_repo", Name: "New Session (Worktree)", Shortcut: "n"},
+		{ID: "new_worktree", Name: "New Session in Existing Worktree"},
+		{ID: "new_session_at_path", Name: "New Session at Path"},
 		{ID: "fork", Name: "Fork Session", Shortcut: "f"},
 		{ID: "delete", Name: "Delete Session", Shortcut: "d"},
 		{ID: "restart", Name: "Restart Session", Shortcut: "r"},
@@ -3342,9 +3637,12 @@ func (h *Home) dispatchCommand(id string) (tea.Model, tea.Cmd) {
 			title: filepath.Base(repoPath),
 		})
 	case "new_repo":
-		h.newDialog.Show()
-		return h, nil
+		// Mirror the `n` key: instant worktree session at cursor (or path
+		// picker fallback if there's no cursor target).
+		return h.startWorktreeSessionAtCursor()
 	case "new_worktree":
+		// Existing worktrees: show the picker so the user can attach a session
+		// to a worktree fleet didn't create.
 		repoPath := h.resolveCurrentRepo()
 		if repoPath == "" {
 			h.setError(fmt.Errorf("no repo selected"))
@@ -3352,6 +3650,11 @@ func (h *Home) dispatchCommand(id string) (tea.Model, tea.Cmd) {
 		}
 		h.worktreeDialog.ShowLoading()
 		return h, tea.Batch(h.fetchWorkspaceListForRepo(repoPath), spinnerTickCmd)
+	case "new_session_at_path":
+		// Power-user path: type a project path. Git repos route through the
+		// worktree-by-default flow; non-git paths produce a plain session.
+		h.newDialog.Show()
+		return h, nil
 	case "fork":
 		return h, h.forkSelected()
 	case "delete":

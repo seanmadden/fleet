@@ -1,7 +1,10 @@
 package workspace
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -204,6 +207,44 @@ func TestSanitizeBranchName(t *testing.T) {
 				t.Errorf("SanitizeBranchName(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestDeriveWorktreePath_FromWorktree exercises the bug fix where calling
+// deriveWorktreePath from inside a linked worktree used to produce a sibling
+// of the *worktree* (e.g. `<repo>-wt-claude/abcd`) instead of a sibling of the
+// *main* repo. The new behaviour resolves through `git rev-parse
+// --git-common-dir` so the result is anchored at the main repo regardless of
+// which worktree fleet happened to be invoked in.
+func TestDeriveWorktreePath_FromWorktree(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "myrepo")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	runCmd := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, out)
+		}
+	}
+	runCmd(main, "init", "--initial-branch=main", "-q")
+	runCmd(main, "config", "user.email", "test@example.com")
+	runCmd(main, "config", "user.name", "test")
+	runCmd(main, "commit", "--allow-empty", "-q", "-m", "init")
+
+	wt := filepath.Join(root, "myrepo-claude-abc12345")
+	runCmd(main, "worktree", "add", "-b", "claude/abc12345", wt)
+
+	got := deriveWorktreePath(wt, "feature-x")
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	want := filepath.Join(resolvedRoot, "myrepo-feature-x")
+	if got != want {
+		t.Errorf("deriveWorktreePath(worktree) = %q, want %q (sibling of main, not of worktree)", got, want)
 	}
 }
 

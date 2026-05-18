@@ -2,6 +2,9 @@ package session
 
 import (
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -97,6 +100,66 @@ func TestTitleFromPath(t *testing.T) {
 				t.Errorf("TitleFromPath(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestGetMainRepo covers the three resolution paths:
+//
+//  1. plain git repo → same as GetRepoRoot
+//  2. linked worktree → resolves to the main repo (not the worktree)
+//  3. non-git path → falls back to GetRepoRoot's value (the path itself)
+//
+// Uses real `git init` + `git worktree add` fixtures because the function
+// shells out to `git rev-parse --git-common-dir`; mocking that would test the
+// mock, not the behaviour.
+func TestGetMainRepo(t *testing.T) {
+	// Reset the package cache so tests don't leak across runs.
+	mainRepoCacheMu.Lock()
+	mainRepoCache = map[string]string{}
+	mainRepoCacheMu.Unlock()
+	repoRootCacheMu.Lock()
+	repoRootCache = map[string]string{}
+	repoRootCacheMu.Unlock()
+
+	root := t.TempDir()
+
+	// 1) plain repo
+	mainRepoPath := filepath.Join(root, "myrepo")
+	if err := os.MkdirAll(mainRepoPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	runCmd := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, out)
+		}
+	}
+	runCmd(mainRepoPath, "init", "--initial-branch=main", "-q")
+	runCmd(mainRepoPath, "config", "user.email", "test@example.com")
+	runCmd(mainRepoPath, "config", "user.name", "test")
+	runCmd(mainRepoPath, "commit", "--allow-empty", "-q", "-m", "init")
+
+	resolved, err := filepath.EvalSymlinks(mainRepoPath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if got := GetMainRepo(mainRepoPath); got != resolved {
+		t.Errorf("plain repo: GetMainRepo(%q) = %q, want %q", mainRepoPath, got, resolved)
+	}
+
+	// 2) linked worktree
+	wtPath := filepath.Join(root, "myrepo-wt")
+	runCmd(mainRepoPath, "worktree", "add", "-b", "claude/abcd1234", wtPath)
+	if got := GetMainRepo(wtPath); got != resolved {
+		t.Errorf("worktree: GetMainRepo(%q) = %q, want %q (main repo)", wtPath, got, resolved)
+	}
+
+	// 3) non-git path → falls back to whatever GetRepoRoot returns (the path
+	//    itself, since rev-parse fails).
+	nonGit := t.TempDir()
+	if got := GetMainRepo(nonGit); got != nonGit {
+		t.Errorf("non-git: GetMainRepo(%q) = %q, want %q", nonGit, got, nonGit)
 	}
 }
 

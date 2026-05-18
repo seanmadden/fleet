@@ -1300,9 +1300,14 @@ func skipOSCBody(content string, i int) int {
 var (
 	repoRootCache   = make(map[string]string)
 	repoRootCacheMu sync.RWMutex
+
+	mainRepoCache   = make(map[string]string)
+	mainRepoCacheMu sync.RWMutex
 )
 
-// GetRepoRoot returns the git repo root for a path, or the path itself if not a git repo.
+// GetRepoRoot returns the git repo root for a path, or the path itself if not a
+// git repo. For a worktree the result is the worktree's own root (cursor-local
+// semantics) — use GetMainRepo to resolve a worktree back to its main repo.
 func GetRepoRoot(projectPath string) string {
 	repoRootCacheMu.RLock()
 	if root, ok := repoRootCache[projectPath]; ok {
@@ -1325,11 +1330,49 @@ func GetRepoRoot(projectPath string) string {
 	return root
 }
 
-// GroupByRepo groups sessions by their git repo root.
+// GetMainRepo returns the main repo path for projectPath. For a regular repo
+// this is the same as GetRepoRoot. For a linked worktree this returns the
+// path of the main worktree (the directory whose `.git` is the common dir).
+// For a non-git path it falls back to GetRepoRoot's value.
+//
+// Used by sidebar grouping, pinning, and repo-info refresh keying — anywhere
+// "which physical repo does this session belong to?" matters. Cursor-locality
+// callers (a/b/branch/editor) should keep using GetRepoRoot.
+func GetMainRepo(projectPath string) string {
+	mainRepoCacheMu.RLock()
+	if root, ok := mainRepoCache[projectPath]; ok {
+		mainRepoCacheMu.RUnlock()
+		return root
+	}
+	mainRepoCacheMu.RUnlock()
+
+	// Resolve the absolute common dir; main repo is its parent directory
+	// (`<main>/.git` → `<main>`). For a non-git path this command fails and
+	// we fall back to GetRepoRoot's value.
+	cmd := exec.Command("git", "-C", projectPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	out, err := cmd.Output()
+	main := GetRepoRoot(projectPath)
+	if err == nil {
+		commonDir := strings.TrimSpace(string(out))
+		if commonDir != "" {
+			main = filepath.Dir(commonDir)
+		}
+	}
+
+	mainRepoCacheMu.Lock()
+	mainRepoCache[projectPath] = main
+	mainRepoCacheMu.Unlock()
+
+	return main
+}
+
+// GroupByRepo groups sessions by their main repo path. Worktree-rooted
+// sessions group with their main-repo siblings rather than appearing as a
+// separate sidebar group.
 func GroupByRepo(sessions []*Session) map[string][]*Session {
 	groups := make(map[string][]*Session)
 	for _, s := range sessions {
-		root := GetRepoRoot(s.ProjectPath)
+		root := GetMainRepo(s.ProjectPath)
 		groups[root] = append(groups[root], s)
 	}
 	return groups
