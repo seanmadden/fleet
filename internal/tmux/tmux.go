@@ -32,6 +32,13 @@ type Session struct {
 	DisplayName string
 	WorkDir     string
 
+	// Cols/Rows: initial window size for Start. Zero values fall back to tmux's
+	// default (host terminal at server-start time, which is usually wrong for
+	// fleet — the UI sets these to the preview-pane size so Claude wraps to
+	// fit). After creation, ResizeWindow keeps them in sync.
+	Cols int
+	Rows int
+
 	cacheMu      sync.RWMutex
 	cacheContent string
 	cacheTime    time.Time
@@ -77,9 +84,16 @@ func ReconnectSession(tmuxName, displayName, workDir string) *Session {
 // Start creates a detached tmux session and runs the given command.
 // Optional env vars are set at the tmux session level via -e flags,
 // inherited by the shell and all child processes (avoids race with shell plugins).
+//
+// If s.Cols and s.Rows are both > 0, the new window is created at that size so
+// Claude wraps to fit the fleet preview pane instead of inheriting whatever
+// width tmux's server first booted at.
 func (s *Session) Start(command string, env ...string) error {
 	// Create detached session.
 	args := []string{"new-session", "-d", "-s", s.Name, "-c", s.WorkDir}
+	if s.Cols > 0 && s.Rows > 0 {
+		args = append(args, "-x", fmt.Sprintf("%d", s.Cols), "-y", fmt.Sprintf("%d", s.Rows))
+	}
 	for _, e := range env {
 		args = append(args, "-e", e)
 	}
@@ -266,6 +280,31 @@ func (s *Session) Kill() error {
 	delete(sessionCacheData, s.Name)
 	sessionCacheMu.Unlock()
 
+	return nil
+}
+
+// ResizeWindow resizes the session's window to (cols × rows). Used to keep
+// tmux's pane matched to fleet's preview pane width so Claude's output isn't
+// wider than what fleet renders. Also called before/after attach so the user
+// sees a full-terminal-size pane while attached.
+//
+// Returns nil if cols/rows are non-positive (caller convenience — UI computes
+// dimensions from terminal size and may produce zero before the first
+// WindowSizeMsg). Updates s.Cols/s.Rows so subsequent Start/restart use the
+// same size.
+func (s *Session) ResizeWindow(cols, rows int) error {
+	if cols <= 0 || rows <= 0 {
+		return nil
+	}
+	s.Cols = cols
+	s.Rows = rows
+	cmd := exec.Command("tmux", "resize-window", "-t", s.Name, "-x", fmt.Sprintf("%d", cols), "-y", fmt.Sprintf("%d", rows))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// Best-effort: a missing session (just-killed, race with cleanup) is
+		// not a real error, but log other failures.
+		debuglog.Logger.Debug("tmux resize-window failed", "session", s.Name, "cols", cols, "rows", rows, "err", err, "out", strings.TrimSpace(string(output)))
+		return fmt.Errorf("tmux resize-window failed: %w", err)
+	}
 	return nil
 }
 

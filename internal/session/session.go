@@ -67,6 +67,12 @@ type Session struct {
 	tmuxSession  *tmux.Session
 	paneCapturer PaneCapturer // optional override for testing; if nil, uses tmuxSession
 	mu           sync.RWMutex
+
+	// Preferred tmux window size — used when starting/restarting the underlying
+	// tmux session so Claude wraps to fleet's preview pane width. The UI keeps
+	// this in sync via SetPreferredSize when the terminal resizes.
+	preferredCols int
+	preferredRows int
 }
 
 // NewSession creates a new session for the given project path.
@@ -104,11 +110,43 @@ func (s *Session) sessionEnv() []string {
 	}
 }
 
+// SetPreferredSize records the preview-pane size that future tmux starts should
+// match, and resizes the live tmux session if one already exists. Safe to call
+// from the UI goroutine; the tmux command itself is short and best-effort, but
+// callers that care about UI latency should run it from a background goroutine.
+func (s *Session) SetPreferredSize(cols, rows int) {
+	if cols <= 0 || rows <= 0 {
+		return
+	}
+	s.mu.Lock()
+	s.preferredCols = cols
+	s.preferredRows = rows
+	ts := s.tmuxSession
+	s.mu.Unlock()
+	if ts == nil {
+		return
+	}
+	ts.Cols = cols
+	ts.Rows = rows
+	_ = ts.ResizeWindow(cols, rows)
+}
+
+// applyPreferredSizeLocked copies the preferred size onto the tmux session
+// handle so the next Start call uses it. Must be called with s.mu held.
+func (s *Session) applyPreferredSizeLocked() {
+	if s.tmuxSession == nil {
+		return
+	}
+	s.tmuxSession.Cols = s.preferredCols
+	s.tmuxSession.Rows = s.preferredRows
+}
+
 // Start launches the Claude Code session in tmux.
 func (s *Session) Start() error {
 	debuglog.Logger.Info("session start", "id", s.ID, "title", s.Title, "path", s.ProjectPath)
 	s.mu.Lock()
 	s.Status = StatusStarting
+	s.applyPreferredSizeLocked()
 	s.mu.Unlock()
 
 	cmd := s.buildClaudeCmd()
@@ -272,6 +310,7 @@ func (s *Session) Restart() error {
 	s.TmuxSessionName = newTmux.Name
 	s.Status = StatusStarting
 	s.deathRecorded = false
+	s.applyPreferredSizeLocked()
 	s.mu.Unlock()
 
 	cmd := s.buildClaudeCmd()
