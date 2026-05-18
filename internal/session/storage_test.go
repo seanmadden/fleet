@@ -571,6 +571,7 @@ func TestMigrationIdempotent(t *testing.T) {
 		ProjectPath: "/tmp/project",
 		Status:      "idle",
 		CreatedAt:   now,
+		SortKey:     7,
 	}
 	if err := db2.SaveSession(row); err != nil {
 		t.Fatalf("SaveSession after re-migration failed: %v", err)
@@ -582,6 +583,183 @@ func TestMigrationIdempotent(t *testing.T) {
 	}
 	if len(sessions) != 1 {
 		t.Errorf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].SortKey != 7 {
+		t.Errorf("SortKey: got %d, want 7", sessions[0].SortKey)
+	}
+
+	// repo_order table should also persist across reopen.
+	if err := db2.UpsertRepoOrder("/tmp/r", 42); err != nil {
+		t.Fatalf("UpsertRepoOrder after re-migration failed: %v", err)
+	}
+	order, err := db2.LoadRepoOrder()
+	if err != nil {
+		t.Fatalf("LoadRepoOrder after re-migration failed: %v", err)
+	}
+	if order["/tmp/r"] != 42 {
+		t.Errorf("LoadRepoOrder: /tmp/r got %d, want 42", order["/tmp/r"])
+	}
+}
+
+func TestSessionSortKeyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().Truncate(time.Second)
+	row := &SessionRow{
+		ID:          "sk-test",
+		Title:       "Sort Key Test",
+		ProjectPath: "/tmp/p",
+		Status:      "idle",
+		CreatedAt:   now,
+		SortKey:     12345,
+	}
+	if err := db.SaveSession(row); err != nil {
+		t.Fatalf("SaveSession failed: %v", err)
+	}
+
+	sessions, err := db.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].SortKey != 12345 {
+		t.Errorf("SortKey: got %d, want 12345", sessions[0].SortKey)
+	}
+
+	// UpdateSessionSortKey should persist a new value.
+	if err := db.UpdateSessionSortKey("sk-test", 999); err != nil {
+		t.Fatalf("UpdateSessionSortKey failed: %v", err)
+	}
+	sessions, err = db.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions failed: %v", err)
+	}
+	if sessions[0].SortKey != 999 {
+		t.Errorf("after update, SortKey: got %d, want 999", sessions[0].SortKey)
+	}
+}
+
+func TestLoadSessionsRespectsSortKeyThenCreated(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	rows := []*SessionRow{
+		{ID: "old", Title: "old", ProjectPath: "/p", Status: "idle", CreatedAt: now, SortKey: 0},
+		{ID: "new", Title: "new", ProjectPath: "/p", Status: "idle", CreatedAt: now.Add(time.Second), SortKey: 0},
+		{ID: "explicit", Title: "explicit", ProjectPath: "/p", Status: "idle", CreatedAt: now.Add(2 * time.Second), SortKey: 5},
+	}
+	for _, r := range rows {
+		if err := db.SaveSession(r); err != nil {
+			t.Fatalf("SaveSession %q: %v", r.ID, err)
+		}
+	}
+
+	sessions, err := db.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("expected 3 sessions, got %d", len(sessions))
+	}
+	// sort_key=0 ties → ordered by created_at: old, new.
+	// sort_key=5 sorts after.
+	wantOrder := []string{"old", "new", "explicit"}
+	for i, want := range wantOrder {
+		if sessions[i].ID != want {
+			t.Errorf("position %d: got %q, want %q (full order: %v)", i, sessions[i].ID, want,
+				[]string{sessions[0].ID, sessions[1].ID, sessions[2].ID})
+		}
+	}
+
+	// Move "old" into the middle with sort_key=3 — it should now slot between
+	// the sort_key=0 group ("new") and the sort_key=5 entry ("explicit").
+	if err := db.UpdateSessionSortKey("old", 3); err != nil {
+		t.Fatalf("UpdateSessionSortKey: %v", err)
+	}
+	sessions, err = db.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions after update: %v", err)
+	}
+	wantOrder = []string{"new", "old", "explicit"}
+	for i, want := range wantOrder {
+		if sessions[i].ID != want {
+			t.Errorf("after update, position %d: got %q, want %q (full order: %v)", i, sessions[i].ID, want,
+				[]string{sessions[0].ID, sessions[1].ID, sessions[2].ID})
+		}
+	}
+}
+
+func TestRepoOrder(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	// Initial: empty map (not nil — caller can iterate without a nil check).
+	order, err := db.LoadRepoOrder()
+	if err != nil {
+		t.Fatalf("LoadRepoOrder: %v", err)
+	}
+	if len(order) != 0 {
+		t.Errorf("expected empty repo_order, got %v", order)
+	}
+
+	// Upsert two entries.
+	if err := db.UpsertRepoOrder("/tmp/a", 100); err != nil {
+		t.Fatalf("UpsertRepoOrder /tmp/a: %v", err)
+	}
+	if err := db.UpsertRepoOrder("/tmp/b", 200); err != nil {
+		t.Fatalf("UpsertRepoOrder /tmp/b: %v", err)
+	}
+	order, _ = db.LoadRepoOrder()
+	if order["/tmp/a"] != 100 || order["/tmp/b"] != 200 {
+		t.Errorf("unexpected order: %v", order)
+	}
+
+	// Upsert again with new key — should overwrite (ON CONFLICT DO UPDATE).
+	if err := db.UpsertRepoOrder("/tmp/a", 300); err != nil {
+		t.Fatalf("UpsertRepoOrder rewrite: %v", err)
+	}
+	order, _ = db.LoadRepoOrder()
+	if order["/tmp/a"] != 300 {
+		t.Errorf("expected /tmp/a=300 after rewrite, got %d", order["/tmp/a"])
+	}
+
+	// Delete an entry.
+	if err := db.DeleteRepoOrder("/tmp/a"); err != nil {
+		t.Fatalf("DeleteRepoOrder: %v", err)
+	}
+	order, _ = db.LoadRepoOrder()
+	if _, ok := order["/tmp/a"]; ok {
+		t.Errorf("expected /tmp/a to be deleted, got %v", order)
+	}
+	if order["/tmp/b"] != 200 {
+		t.Errorf("/tmp/b should still be 200, got %d", order["/tmp/b"])
+	}
+
+	// DeleteRepoOrder on a missing key should be a no-op (no error).
+	if err := db.DeleteRepoOrder("/does/not/exist"); err != nil {
+		t.Errorf("DeleteRepoOrder on missing key: %v", err)
 	}
 }
 
