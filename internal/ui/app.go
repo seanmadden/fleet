@@ -290,6 +290,11 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.commandPalette.SetSize(msg.Width, msg.Height)
 		h.bugReport.SetSize(msg.Width, msg.Height)
 		h.syncViewport()
+		// Resize tmux sessions so Claude wraps to fit the new preview pane.
+		// Without this, capture-pane returns content wider than fleet renders
+		// and ansi.Truncate (preview.go) chops the right side off.
+		cols, rows := h.previewPaneSize()
+		h.dispatchSessionResize(cols, rows)
 		return h, nil
 
 	case tea.KeyMsg:
@@ -332,6 +337,9 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := session.NewSession(msg.title, msg.path)
 		s.WorkspaceName = msg.workspaceName
 		s.ForkFromID = msg.parentClaudeSessionID
+		if cols, rows := h.previewPaneSize(); cols > 0 {
+			s.SetPreferredSize(cols, rows)
+		}
 		return h, func() tea.Msg {
 			if err := s.Start(); err != nil {
 				return sessionCreateResultMsg{err: err}
@@ -692,6 +700,14 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		h.rebuildFlatItems()
 		if len(h.flatItems) > 0 && h.cursor == 0 {
 			h.cursor = FirstSelectableItem(h.flatItems)
+		}
+
+		// Apply the current preview size to all reconnected sessions so existing
+		// tmux windows shrink to fit the preview pane on startup (without this,
+		// they stay at whatever size the tmux server first booted at, often the
+		// full host terminal width).
+		if cols, rows := h.previewPaneSize(); cols > 0 {
+			h.dispatchSessionResize(cols, rows)
 		}
 
 		// Start hook watcher.
@@ -1308,7 +1324,15 @@ func (h *Home) attachSelected() tea.Cmd {
 
 	h.isAttaching.Store(true)
 
-	return tea.Exec(attachCmd{session: s.GetTmuxSession()}, func(err error) tea.Msg {
+	previewCols, previewRows := h.previewPaneSize()
+	cmd := attachCmd{
+		session:     s.GetTmuxSession(),
+		termCols:    h.width,
+		termRows:    h.height,
+		previewCols: previewCols,
+		previewRows: previewRows,
+	}
+	return tea.Exec(cmd, func(err error) tea.Msg {
 		// CRITICAL: Clear isAttaching before returning the message.
 		// Prevents race where View() returns empty string after detach.
 		h.isAttaching.Store(false)
@@ -1318,10 +1342,24 @@ func (h *Home) attachSelected() tea.Cmd {
 
 type attachCmd struct {
 	session *tmux.Session
+	// termCols/termRows: host terminal size — tmux is resized up to this
+	// before attach so the user sees a full-screen pane instead of one stuck
+	// at the preview-pane width.
+	termCols, termRows int
+	// previewCols/previewRows: fleet preview size — tmux is resized back to
+	// this on detach so the next capture-pane fits without truncation.
+	previewCols, previewRows int
 }
 
 func (a attachCmd) Run() error {
-	return a.session.Attach(context.Background())
+	if a.termCols > 0 && a.termRows > 0 {
+		_ = a.session.ResizeWindow(a.termCols, a.termRows)
+	}
+	err := a.session.Attach(context.Background())
+	if a.previewCols > 0 && a.previewRows > 0 {
+		_ = a.session.ResizeWindow(a.previewCols, a.previewRows)
+	}
+	return err
 }
 
 func (a attachCmd) SetStdin(r io.Reader)  {}
@@ -1336,6 +1374,11 @@ func (h *Home) handleSessionCreate(msg sessionCreateMsg) (tea.Model, tea.Cmd) {
 	debuglog.Logger.Info("creating session", "title", msg.title, "path", msg.path)
 	s := session.NewSession(msg.title, msg.path)
 	s.WorkspaceName = msg.workspaceName
+	// Boot the new tmux window at preview-pane size so Claude wraps to fit from
+	// the very first render — avoids a brief moment where output is too wide.
+	if cols, rows := h.previewPaneSize(); cols > 0 {
+		s.SetPreferredSize(cols, rows)
+	}
 	autoFocus := h.cfg.IsFocusOnNewSessionEnabled()
 	return h, func() tea.Msg {
 		if err := s.Start(); err != nil {
@@ -2687,6 +2730,59 @@ func (h *Home) layoutMode() string {
 		return "stacked"
 	}
 	return "dual"
+}
+
+// previewPaneSize returns the cols × rows the fleet preview pane occupies in
+// the current layout. tmux sessions are resized to match so Claude wraps to
+// fit and the right side isn't chopped off by ansi.Truncate in preview.go.
+// Returns (0, 0) before WindowSizeMsg has set valid dimensions; callers must
+// skip resizing in that case. Mirrors the arithmetic in View() (app.go:828+).
+func (h *Home) previewPaneSize() (cols, rows int) {
+	if h.width <= 0 || h.height <= 0 {
+		return 0, 0
+	}
+	contentHeight := h.height - 2 - helpBarHeight
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+	switch h.layoutMode() {
+	case "single", "stacked":
+		// In stacked mode the preview spans full width; in single mode no
+		// preview is shown but a sensible width still helps if the user
+		// switches layouts mid-session.
+		return h.width, contentHeight
+	default: // dual
+		sidebarWidth := h.width * 35 / 100
+		if sidebarWidth < 20 {
+			sidebarWidth = 20
+		}
+		previewWidth := h.width - sidebarWidth - 3 // 3 for separator " │ "
+		if previewWidth < 1 {
+			previewWidth = 1
+		}
+		return previewWidth, contentHeight
+	}
+}
+
+// dispatchSessionResize asynchronously resizes every tmux session to (cols × rows).
+// Runs in a goroutine because tmux resize-window can take a few ms per session
+// when the tmux server is busy, and the UI Update() loop must stay responsive.
+func (h *Home) dispatchSessionResize(cols, rows int) {
+	if cols <= 0 || rows <= 0 {
+		return
+	}
+	h.workerMu.Lock()
+	sessions := make([]*session.Session, len(h.sessions))
+	copy(sessions, h.sessions)
+	h.workerMu.Unlock()
+	if len(sessions) == 0 {
+		return
+	}
+	go func() {
+		for _, s := range sessions {
+			s.SetPreferredSize(cols, rows)
+		}
+	}()
 }
 
 // bindCurrentSessionToSlot persists the selected session under the given slot,
