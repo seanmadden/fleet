@@ -53,6 +53,7 @@ type Session struct {
 	FirstPrompt           string
 	TitleGenerated        bool
 	PromptCount           int
+	SortKey               int64  // Sidebar reorder key. Default 0 ties on created_at (legacy order); non-zero values place the session explicitly.
 	ForkFromID            string // Transient: if set, start with --resume <id> --fork-session (cleared after start)
 
 	hookStatus       string
@@ -741,6 +742,7 @@ func (s *Session) ToRow() *SessionRow {
 		FirstPrompt:     s.FirstPrompt,
 		TitleGenerated:  s.TitleGenerated,
 		PromptCount:     s.PromptCount,
+		SortKey:         s.SortKey,
 	}
 }
 
@@ -811,6 +813,7 @@ func FromRow(row *SessionRow) *Session {
 		FirstPrompt:     row.FirstPrompt,
 		TitleGenerated:  row.TitleGenerated,
 		PromptCount:     row.PromptCount,
+		SortKey:         row.SortKey,
 		tmuxSession:     ts,
 	}
 }
