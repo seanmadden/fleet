@@ -243,7 +243,7 @@ func (d *WorktreeDialog) View() string {
 	var b strings.Builder
 
 	// Title with repo name.
-	title := "New Worktree"
+	title := "Existing Worktrees"
 	if d.repoPath != "" {
 		title += " — " + filepath.Base(d.repoPath)
 	}

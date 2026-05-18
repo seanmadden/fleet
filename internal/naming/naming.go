@@ -3,7 +3,8 @@ package naming
 import "strings"
 
 const (
-	maxTitleLen = 50
+	maxTitleLen      = 50
+	maxBranchSlugLen = 50
 )
 
 // fillerPrefixes are common conversational prefixes to strip from prompts.
@@ -78,4 +79,79 @@ func GenerateTitle(prompt string) string {
 	}
 
 	return prompt
+}
+
+// BranchSlug converts a session title into a git-safe branch slug suitable for
+// the `claude/<slug>` rename step in the per-session-worktrees flow.
+//
+// Rules (mirror workspace.SanitizeBranchInput's character set but produce a
+// clean slug instead of validating a partial input):
+//   - lowercase
+//   - any character outside [a-z0-9._] becomes '-'
+//     (covers spaces, slashes, and every char git's check-ref-format disallows:
+//     ~ ^ : ? * [ ] \ ` ' " and friends)
+//   - collapse consecutive '-' into one
+//   - strip leading '-' and '.' (git ref-format forbids both as the first char
+//     of any component, and there is only one component here)
+//   - strip trailing '.' and '.lock' (forbidden by git ref-format)
+//   - truncate at maxBranchSlugLen, preferring the last '-' boundary so words
+//     don't get cut mid-token
+//   - empty result returns ""
+//
+// Examples:
+//   - "Fix the login bug"           → "fix-the-login-bug"
+//   - "Add CSV export 🚀"           → "add-csv-export"
+//   - "feat/new auth (with OAuth2)" → "feat-new-auth-with-oauth2"
+func BranchSlug(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+
+	// Lowercase + replace disallowed chars with '-'.
+	var b strings.Builder
+	b.Grow(len(title))
+	for _, r := range title {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	s := b.String()
+
+	// Collapse consecutive '-'.
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+
+	// Strip leading '-' / '.'.
+	for len(s) > 0 && (s[0] == '-' || s[0] == '.') {
+		s = s[1:]
+	}
+	// Strip trailing '.' (collapsed via the loop above already handles '-'s).
+	for len(s) > 0 && s[len(s)-1] == '.' {
+		s = s[:len(s)-1]
+	}
+	s = strings.TrimRight(s, "-")
+	// Strip trailing ".lock" (forbidden by git check-ref-format).
+	for strings.HasSuffix(s, ".lock") {
+		s = strings.TrimSuffix(s, ".lock")
+		s = strings.TrimRight(s, ".-")
+	}
+
+	// Truncate at maxBranchSlugLen, preferring last '-' boundary.
+	if len(s) > maxBranchSlugLen {
+		cut := maxBranchSlugLen
+		if i := strings.LastIndexByte(s[:cut], '-'); i > maxBranchSlugLen/2 {
+			cut = i
+		}
+		s = s[:cut]
+		s = strings.TrimRight(s, "-.")
+	}
+
+	return s
 }

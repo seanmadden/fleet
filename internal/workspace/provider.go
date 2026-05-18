@@ -417,18 +417,47 @@ func ValidateBranchName(branch string) string {
 	return ""
 }
 
-// deriveWorktreePath computes the sibling worktree path.
+// deriveWorktreePath computes the sibling worktree path next to the **main**
+// repo. If repoPath is itself a linked worktree (e.g. fleet is invoked on a
+// previously-created `claude/<hex>` workspace), `git rev-parse --git-common-dir`
+// resolves to the main repo's `.git`, whose parent is the main repo — so the
+// new worktree always lands beside the main checkout regardless of which
+// worktree the user happened to be in.
 // e.g. repoPath="/code/myrepo", name="feature-login" -> "/code/myrepo-feature-login"
+// e.g. repoPath="/code/myrepo-claude-abc12345", name="feature-x" -> "/code/myrepo-feature-x"
 func deriveWorktreePath(repoPath, name string) string {
 	absRepo, _ := filepath.Abs(repoPath)
-	parent := filepath.Dir(absRepo)
-	base := filepath.Base(absRepo)
+	main := absRepo
+	if commonDir := gitCommonDir(absRepo); commonDir != "" {
+		main = filepath.Dir(commonDir)
+	}
+	parent := filepath.Dir(main)
+	base := filepath.Base(main)
 	return filepath.Join(parent, base+"-"+name)
 }
 
+// gitCommonDir is a local helper for deriveWorktreePath. We can't import
+// internal/git here (workspace is imported by ui, which also imports git, so
+// the dependency chain is fine the other way around — but git imports nothing
+// from workspace, so we keep this independent). Returns "" on error.
+func gitCommonDir(repoPath string) string {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // DeriveWorktreePathPreview returns a display-friendly relative path preview.
+// Mirrors deriveWorktreePath: if repoPath is a linked worktree the preview
+// shows the main repo's base name, not the worktree's.
 func DeriveWorktreePathPreview(repoPath, name string) string {
 	absRepo, _ := filepath.Abs(repoPath)
-	base := filepath.Base(absRepo)
+	main := absRepo
+	if commonDir := gitCommonDir(absRepo); commonDir != "" {
+		main = filepath.Dir(commonDir)
+	}
+	base := filepath.Base(main)
 	return "../" + base + "-" + name
 }

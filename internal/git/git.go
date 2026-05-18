@@ -171,6 +171,37 @@ func GetDefaultBranch(repoPath string) string {
 	return "main"
 }
 
+// GitCommonDir returns the absolute path of the git common directory for the
+// given repo path. For a regular repo this is `<repo>/.git`; for a linked
+// worktree this is the main repo's `.git` directory. Returns empty string if
+// not a git repo or on error. Used by session.GetMainRepo to resolve a worktree
+// path back to its main repo.
+func GitCommonDir(repoPath string) string {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// RenameBranch renames a git branch in the given repo. Wraps `git branch -m
+// <old> <new>`. Returns the trimmed git error output on failure so callers can
+// inspect it (e.g. detecting "already exists" to retry with a suffix).
+func RenameBranch(repoPath, oldName, newName string) error {
+	cmd := exec.Command("git", "-C", repoPath, "branch", "-m", oldName, newName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(output))
+		debuglog.Logger.Debug("RenameBranch failed", "path", repoPath, "old", oldName, "new", newName, "err", msg)
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
 // IsWorktree returns true if the given path is a git worktree (not the main repo).
 func IsWorktree(repoPath string) bool {
 	gitDir := exec.Command("git", "-C", repoPath, "rev-parse", "--git-dir")
