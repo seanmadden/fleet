@@ -60,7 +60,7 @@ internal/diagnostics/diagnostics.go  # System diagnostics collector for bug repo
 internal/ui/                 # Bubble Tea TUI (app, sidebar, preview, dialogs, styles)
 internal/ui/palette.go       # Theme palette definitions (5 built-in themes)
 internal/ui/settings.go      # Settings dialog (S key)
-internal/ui/bugreport.go     # Bug report dialog (! key) with diagnostics, error history, action log
+internal/ui/bugreport.go     # Diagnostics dialog (! key) with error history, action log, system info
 internal/ui/actionlog.go     # Ring buffer tracking user actions (steps to reproduce)
 internal/ui/errors.go        # Ring buffer keeping error history (errors that flash and vanish)
 internal/ui/keybindings.go   # Centralized keybinding definitions
@@ -81,7 +81,7 @@ chrome-extension/                # Chrome MV3 extension (service worker, manifes
 - Sessions grouped by git repo root in sidebar with tree lines (├─/└─)
 - Status: Running, Waiting, Finished, Idle, Error, Starting
 - Status icons: ● (running/finished), ◐ (waiting), ○ (idle/starting), ✕ (error)
-- Keybindings: j/k nav, Enter attach, Space jump to next waiting/finished, a new session (instant, repo-scoped), n new session (worktree-by-default, instant), d delete (Y to also destroy workspace, D to also remove repo), z undo delete (5s window), r restart, R rename, e editor, p open PR/MR in browser, Y quick approve (waiting sessions), / filter, : or Ctrl+P command palette, S settings, ! bug report/diagnostics, ? help, q quit
+- Keybindings: j/k nav, Enter attach, Space jump to next waiting/finished, a new session (instant, repo-scoped), n new session (worktree-by-default, instant), d delete (Y to also destroy workspace, D to also remove repo), z undo delete (5s window), r restart, R rename, e editor, p open PR/MR in browser, Y quick approve (waiting sessions), / filter, : or Ctrl+P command palette, S settings, ! diagnostics, ? help, q quit
 - Session hotkeys (RTS-style): `Alt+0-9` (or `=` then digit) binds the selected session to a slot; re-pressing `Alt+<N>` on a session already in slot N unbinds; `==` then digit clears any slot; plain `0-9` jumps to the bound session (double-tap within 400ms also attaches); `[N]` badge in sidebar marks bound sessions; bindings persist in SQLite `slot_bindings` table (FK cascade on session delete)
 - Command palette (: / Ctrl+P): fuzzy-searchable list of all actions; palette-only commands include "Reload All Sessions" (restarts all dead/error sessions)
 - Undo delete: `z` key restores last deleted session within 5s window (stacked — multiple deletes each undoable). Tmux kept alive during window for full restore.
@@ -116,8 +116,8 @@ chrome-extension/                # Chrome MV3 extension (service worker, manifes
 - Editor: config.editor > $EDITOR > "code" (VS Code)
 - Themes: tokyo-night (default), catppuccin-mocha, rose-pine, nord, gruvbox — configurable via settings (S key)
 - Settings dialog: S key opens settings overlay, live theme preview, auto-name toggle, copy .claude toggle, auto-saves on close
-- Bug report: `!` key opens dialog showing error history, action log, system diagnostics; `g` opens GitHub issue with pre-filled markdown via `gh issue create --web`
-- Error history: ring buffer (max 50) of errors that flash for 5s — persists for bug reporting
+- Diagnostics: `!` key opens dialog showing error history, action log, and system info (version, OS, tmux). Read-only — no issue submission from inside the app.
+- Error history: ring buffer (max 50) of errors that flash for 5s — surfaced in the diagnostics dialog
 - Action log: ring buffer (max 100) of user actions (attach, delete, restart, editor, approve, etc.) for "steps to reproduce"
 - Diagnostics: app version, macOS version, tmux/claude/gh/glab versions, config, last 100 lines of debug.log; home dir sanitized to `~`
 - Auto-naming: sessions auto-titled from user prompt via smart heuristic (filler stripping, word-boundary truncation)

@@ -2,71 +2,45 @@ package ui
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
-	"github.com/brizzai/fleet/internal/debuglog"
 	"github.com/brizzai/fleet/internal/diagnostics"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// bugReportClosedMsg is sent when the bug report dialog closes.
+// bugReportClosedMsg is sent when the diagnostics dialog closes.
 type bugReportClosedMsg struct{}
 
-// bugReportOpenErrMsg is sent when opening the GitHub issue fails.
-type bugReportOpenErrMsg struct{ err error }
-
-// BugReportDialog displays diagnostics and recent errors for bug reporting.
+// BugReportDialog displays diagnostics and recent errors.
 type BugReportDialog struct {
 	visible bool
 	width   int
 	height  int
-	scroll  int // scroll offset for content
+	scroll  int
 
-	descInput     textinput.Model
 	report        *diagnostics.Report
-	renderStats   string // pre-formatted render stats markdown
 	errorEntries  []ErrorEntry
 	actionEntries []ActionEntry
-	contentLines  int // total rendered content lines
-	submitting    bool
+	contentLines  int
 }
 
-// NewBugReportDialog creates a bug report dialog.
+// NewBugReportDialog creates a diagnostics dialog.
 func NewBugReportDialog() *BugReportDialog {
-	ti := textinput.New()
-	ti.Placeholder = "Describe what happened..."
-	ti.CharLimit = 256
-	ti.Width = 48
-	return &BugReportDialog{descInput: ti}
+	return &BugReportDialog{}
 }
 
 // Show collects diagnostics and shows the dialog.
-func (d *BugReportDialog) Show(version string, sessionCount int, errors *ErrorHistory, actions *ActionLog, tuiWidth, tuiHeight int, rs *RenderStats, uptime time.Duration) {
+func (d *BugReportDialog) Show(version string, sessionCount int, errors *ErrorHistory, actions *ActionLog, tuiWidth, tuiHeight int) {
 	d.visible = true
 	d.scroll = 0
-	d.submitting = false
-	d.descInput.SetValue("")
-	d.descInput.Focus()
 
 	d.report = diagnostics.Collect(version, sessionCount)
 	d.report.TUIWidth = tuiWidth
 	d.report.TUIHeight = tuiHeight
-	if rs != nil {
-		d.renderStats = rs.FormatMarkdown(uptime)
-	} else {
-		d.renderStats = ""
-	}
 	d.errorEntries = errors.Entries()
 	d.actionEntries = actions.Entries()
-
-	// Pre-format errors and actions into the report.
-	d.report.RecentErrors = d.formatErrors()
-	d.report.RecentActions = d.formatActions()
 }
 
 func (d *BugReportDialog) Hide()           { d.visible = false }
@@ -76,91 +50,20 @@ func (d *BugReportDialog) SetSize(w, h int) {
 	d.height = h
 }
 
-// Update handles key events for the bug report dialog.
+// Update handles key events for the diagnostics dialog.
 func (d *BugReportDialog) Update(msg tea.Msg) (*BugReportDialog, tea.Cmd) {
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return d, nil
 	}
-
-	switch keyMsg.String() {
-	case "esc":
+	if keyMsg.String() == "esc" {
 		d.Hide()
 		return d, func() tea.Msg { return bugReportClosedMsg{} }
-	case "enter":
-		if d.submitting {
-			return d, nil
-		}
-		desc := strings.TrimSpace(d.descInput.Value())
-		if desc == "" {
-			return d, nil
-		}
-		d.submitting = true
-		return d, d.openGitHubIssue(desc)
-	default:
-		if d.submitting {
-			return d, nil
-		}
-		var cmd tea.Cmd
-		d.descInput, cmd = d.descInput.Update(msg)
-		return d, cmd
 	}
+	return d, nil
 }
 
-func (d *BugReportDialog) openGitHubIssue(description string) tea.Cmd {
-	if _, err := exec.LookPath("gh"); err != nil {
-		return func() tea.Msg { return bugReportOpenErrMsg{err: fmt.Errorf("gh CLI not found")} }
-	}
-
-	// Build title from description, truncated.
-	title := truncate(description, 60)
-
-	// Inject user description and render stats into the report.
-	body := d.report.FormatMarkdownWithDesc(description)
-	if d.renderStats != "" {
-		body += "\n" + d.renderStats
-	}
-
-	return func() tea.Msg {
-		debuglog.Logger.Info("bug report: creating GitHub issue via API")
-
-		// Write body to temp file.
-		tmpFile, err := os.CreateTemp("", "fleet-bug-*.md")
-		if err != nil {
-			debuglog.Logger.Error("bug report: failed to create temp file", "err", err)
-			return bugReportOpenErrMsg{err: err}
-		}
-		if _, err := tmpFile.WriteString(body); err != nil {
-			tmpFile.Close()
-			return bugReportOpenErrMsg{err: err}
-		}
-		tmpFile.Close()
-		defer os.Remove(tmpFile.Name())
-
-		// Create issue via API (no URL length limit), then open in browser.
-		cmd := exec.Command("gh", "issue", "create",
-			"--repo", "brizzai/fleet",
-			"--title", title,
-			"--label", "bug",
-			"--body-file", tmpFile.Name(),
-		)
-		out, err := cmd.Output()
-		if err != nil {
-			debuglog.Logger.Error("bug report: gh create failed", "err", err)
-			return bugReportOpenErrMsg{err: fmt.Errorf("gh issue create: %w", err)}
-		}
-
-		// gh outputs the issue URL on stdout.
-		issueURL := strings.TrimSpace(string(out))
-		debuglog.Logger.Info("bug report: issue created", "url", issueURL)
-		if issueURL != "" {
-			_ = exec.Command("open", issueURL).Start()
-		}
-		return bugReportClosedMsg{}
-	}
-}
-
-// View renders the bug report dialog.
+// View renders the diagnostics dialog.
 func (d *BugReportDialog) View() string {
 	dialogWidth := 60
 	if dialogWidth > d.width-4 {
@@ -169,7 +72,7 @@ func (d *BugReportDialog) View() string {
 	if dialogWidth < 40 {
 		dialogWidth = 40
 	}
-	innerWidth := dialogWidth - 6 // padding
+	innerWidth := dialogWidth - 6
 
 	var b strings.Builder
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(ColorAccent)
@@ -177,16 +80,7 @@ func (d *BugReportDialog) View() string {
 	dimStyle := lipgloss.NewStyle().Foreground(ColorTextDim)
 	errorStyle := lipgloss.NewStyle().Foreground(ColorRed)
 
-	// Title.
-	b.WriteString(titleStyle.Render("Bug Report"))
-	b.WriteString("\n")
-
-	// Description input.
-	b.WriteString("\n")
-	b.WriteString(sectionStyle.Render("Description"))
-	b.WriteString("\n")
-	d.descInput.Width = innerWidth - 2
-	b.WriteString("  " + d.descInput.View())
+	b.WriteString(titleStyle.Render("Diagnostics"))
 	b.WriteString("\n")
 
 	// Recent Errors.
@@ -243,7 +137,7 @@ func (d *BugReportDialog) View() string {
 
 	// Diagnostics summary.
 	b.WriteString("\n")
-	b.WriteString(sectionStyle.Render("Diagnostics"))
+	b.WriteString(sectionStyle.Render("System"))
 	b.WriteString("\n")
 	r := d.report
 	diag := fmt.Sprintf("  %s", r.Version)
@@ -262,25 +156,7 @@ func (d *BugReportDialog) View() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(ColorBorder).Render(strings.Repeat("─", innerWidth)))
 	b.WriteString("\n")
 
-	// Controls.
-	if d.submitting {
-		b.WriteString(lipgloss.NewStyle().Foreground(ColorAccent).Render("Creating issue..."))
-	} else {
-		ghAvailable := true
-		if _, err := exec.LookPath("gh"); err != nil {
-			ghAvailable = false
-		}
-		if ghAvailable {
-			hasDesc := strings.TrimSpace(d.descInput.Value()) != ""
-			if hasDesc {
-				b.WriteString(dimStyle.Render("enter") + " Submit    " + dimStyle.Render("esc") + " Close")
-			} else {
-				b.WriteString(dimStyle.Render("Type a description, then press enter") + "    " + dimStyle.Render("esc") + " Close")
-			}
-		} else {
-			b.WriteString(dimStyle.Render("gh CLI not found") + "    " + dimStyle.Render("esc") + " Close")
-		}
-	}
+	b.WriteString(dimStyle.Render("esc") + " Close")
 
 	content := b.String()
 	d.contentLines = strings.Count(content, "\n") + 1
@@ -293,43 +169,6 @@ func (d *BugReportDialog) View() string {
 
 	box := boxStyle.Render(content)
 	return lipgloss.Place(d.width, d.height, lipgloss.Center, lipgloss.Center, box)
-}
-
-func (d *BugReportDialog) formatErrors() []string {
-	home, _ := os.UserHomeDir()
-	var result []string
-	for _, e := range d.errorEntries {
-		ago := formatTimeAgo(e.Timestamp)
-		msg := e.Message
-		if home != "" {
-			msg = strings.ReplaceAll(msg, home, "~")
-		}
-		result = append(result, fmt.Sprintf("%s | %s", ago, msg))
-	}
-	return result
-}
-
-func (d *BugReportDialog) formatActions() []string {
-	home, _ := os.UserHomeDir()
-	var result []string
-	count := len(d.actionEntries)
-	if count > 20 {
-		count = 20
-	}
-	for i := 0; i < count; i++ {
-		a := d.actionEntries[i]
-		ts := a.Timestamp.Format("15:04:05")
-		detail := a.Detail
-		if home != "" {
-			detail = strings.ReplaceAll(detail, home, "~")
-		}
-		result_ := "ok"
-		if !a.Success {
-			result_ = "ERROR"
-		}
-		result = append(result, fmt.Sprintf("%s | %s | %s | %s", ts, a.Action, detail, result_))
-	}
-	return result
 }
 
 func formatTimeAgo(t time.Time) string {

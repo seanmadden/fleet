@@ -1,14 +1,10 @@
 package ui
 
 import (
-	"fmt"
-	"strings"
 	"time"
 )
 
 // RenderStats accumulates rendering-related events for diagnostics.
-// Instead of logging every event (which would spam the debug log),
-// counters are tracked and dumped into the bug report.
 type RenderStats struct {
 	// Window resize tracking.
 	ResizeCount    int       // total WindowSizeMsg events received
@@ -41,47 +37,4 @@ func (rs *RenderStats) RecordViewportDrift() {
 func (rs *RenderStats) RecordHeightMismatch(diff int) {
 	rs.HeightMismatchCount++
 	rs.LastMismatchDiff = diff
-}
-
-// FormatMarkdown formats the render stats for the bug report.
-func (rs *RenderStats) FormatMarkdown(uptime time.Duration) string {
-	var b strings.Builder
-
-	b.WriteString("### Rendering Stats\n")
-	fmt.Fprintf(&b, "- **Uptime**: %s\n", formatDuration(uptime))
-	fmt.Fprintf(&b, "- **Window resizes**: %d", rs.ResizeCount)
-	if rs.ResizeCount > 0 {
-		ago := time.Since(rs.LastResizeTime)
-		fmt.Fprintf(&b, " (last: %dx%d, %s ago)", rs.LastResizeW, rs.LastResizeH, formatDuration(ago))
-	}
-	b.WriteString("\n")
-	fmt.Fprintf(&b, "- **Viewport offset changes**: %d\n", rs.ViewportDriftCount)
-	fmt.Fprintf(&b, "- **View height mismatches**: %d", rs.HeightMismatchCount)
-	if rs.HeightMismatchCount > 0 {
-		fmt.Fprintf(&b, " (last diff: %+d lines)", rs.LastMismatchDiff)
-	}
-	b.WriteString("\n")
-
-	// Flag suspicious patterns.
-	if uptime >= time.Minute {
-		resizesPerMin := float64(rs.ResizeCount) / uptime.Minutes()
-		if resizesPerMin > 1 {
-			fmt.Fprintf(&b, "- **WARNING**: %.0f resizes/min (expected <1)\n", resizesPerMin)
-		}
-	}
-	if rs.HeightMismatchCount > 0 {
-		b.WriteString("- **WARNING**: View height mismatches detected — likely cause of scroll drift\n")
-	}
-
-	return b.String()
-}
-
-func formatDuration(d time.Duration) string {
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
-	}
-	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }

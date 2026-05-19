@@ -451,11 +451,6 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case bugReportClosedMsg:
 		return h, nil
 
-	case bugReportOpenErrMsg:
-		h.bugReport.submitting = false
-		h.setError(msg.err)
-		return h, nil
-
 	case openEditorMsg:
 		if msg.err != nil {
 			h.setError(fmt.Errorf("editor: %w", msg.err))
@@ -1305,8 +1300,8 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		analytics.Track(analytics.EventSettingsOpened, nil)
 		return h, nil
 	case "!":
-		h.actionLog.Add("open bug report", "", true)
-		h.bugReport.Show(h.version, len(h.sessions), h.errorHistory, h.actionLog, h.width, h.height, &h.renderStats, time.Since(h.startTime))
+		h.actionLog.Add("open diagnostics", "", true)
+		h.bugReport.Show(h.version, len(h.sessions), h.errorHistory, h.actionLog, h.width, h.height)
 		analytics.Track(analytics.EventBugReportOpened, nil)
 		return h, nil
 	case "D":
@@ -3624,7 +3619,7 @@ func (h *Home) buildPaletteCommands() []PaletteCommand {
 		{ID: "branch", Name: "Switch Branch", Shortcut: "b"},
 		{ID: "filter", Name: "Filter Sessions", Shortcut: "/"},
 		{ID: "settings", Name: "Settings", Shortcut: "S"},
-		{ID: "bug_report", Name: "Bug Report", Shortcut: "!"},
+		{ID: "bug_report", Name: "Diagnostics", Shortcut: "!"},
 		{ID: "help", Name: "Help", Shortcut: "?"},
 		{ID: "reload_all", Name: "Reload All Sessions"},
 		{ID: "quit", Name: "Quit", Shortcut: "q"},
@@ -3724,8 +3719,8 @@ func (h *Home) dispatchCommand(id string) (tea.Model, tea.Cmd) {
 		analytics.Track(analytics.EventSettingsOpened, nil)
 		return h, nil
 	case "bug_report":
-		h.actionLog.Add("open bug report", "", true)
-		h.bugReport.Show(h.version, len(h.sessions), h.errorHistory, h.actionLog, h.width, h.height, &h.renderStats, time.Since(h.startTime))
+		h.actionLog.Add("open diagnostics", "", true)
+		h.bugReport.Show(h.version, len(h.sessions), h.errorHistory, h.actionLog, h.width, h.height)
 		analytics.Track(analytics.EventBugReportOpened, nil)
 		return h, nil
 	case "help":
