@@ -180,6 +180,86 @@ func TestRenderSidebar_NoSessionInfoLeavesRowsBare(t *testing.T) {
 	}
 }
 
+// TestCollectGroupInfo_EmptyGroupNotAllWorktrees asserts an empty group reports
+// AllWorktrees=false so an empty pinned repo (no sessions) still surfaces its
+// main-branch PR on the header.
+func TestCollectGroupInfo_EmptyGroupNotAllWorktrees(t *testing.T) {
+	info := CollectGroupInfo(nil, "/tmp/mainrepo")
+	if info.SessionCount != 0 {
+		t.Errorf("empty group: SessionCount = %d, want 0", info.SessionCount)
+	}
+	if info.AllWorktrees {
+		t.Error("empty group should have AllWorktrees=false (so pinned-but-empty repos still show their PR)")
+	}
+}
+
+// TestRenderRepoHeader_AllWorktreesHidesChrome asserts the group header
+// suppresses its main-repo branch/dirty/PR chrome when every session under it
+// is worktree-backed — the per-session rows already carry that info, so the
+// header chrome would just be misleading clutter (main repo branch is usually
+// `master`/`main`, not where work is happening). Tests renderRepoHeader
+// directly so the test doesn't have to spin up a real git worktree to drive
+// the GetRepoRoot/GetMainRepo classification.
+func TestRenderRepoHeader_AllWorktreesHidesChrome(t *testing.T) {
+	info := RepoGroupInfo{
+		SessionCount: 2,
+		StatusCounts: map[session.Status]int{session.StatusRunning: 2},
+		AllWorktrees: true,
+	}
+	repoInfo := &git.RepoInfo{
+		Branch:  "master",
+		IsDirty: true,
+		PR: &forge.PR{
+			Forge:  "github",
+			Number: 999,
+			State:  "OPEN",
+		},
+	}
+
+	out := renderRepoHeader("/tmp/mainrepo", true, info, repoInfo, 80, false)
+
+	if strings.Contains(out, "master") {
+		t.Errorf("all-worktree header should not render main-repo branch %q\nout: %s", "master", out)
+	}
+	if strings.Contains(out, "#999") {
+		t.Errorf("all-worktree header should not render main-repo PR badge\nout: %s", out)
+	}
+	if strings.Contains(out, "*") {
+		t.Errorf("all-worktree header should not render dirty asterisk\nout: %s", out)
+	}
+	if !strings.Contains(out, "mainrepo") {
+		t.Errorf("header missing repo name\nout: %s", out)
+	}
+}
+
+// TestRenderRepoHeader_MixedGroupKeepsChrome asserts a group that contains at
+// least one non-worktree session still renders the main-repo branch/PR on the
+// header — chrome stays useful for shared-worktree workflows.
+func TestRenderRepoHeader_MixedGroupKeepsChrome(t *testing.T) {
+	info := RepoGroupInfo{
+		SessionCount: 2,
+		StatusCounts: map[session.Status]int{session.StatusRunning: 2},
+		AllWorktrees: false,
+	}
+	repoInfo := &git.RepoInfo{
+		Branch: "master",
+		PR: &forge.PR{
+			Forge:  "github",
+			Number: 999,
+			State:  "OPEN",
+		},
+	}
+
+	out := renderRepoHeader("/tmp/mainrepo", true, info, repoInfo, 80, false)
+
+	if !strings.Contains(out, "master") {
+		t.Errorf("mixed-group header should still render main-repo branch\nout: %s", out)
+	}
+	if !strings.Contains(out, "#999") {
+		t.Errorf("mixed-group header should still render main-repo PR badge\nout: %s", out)
+	}
+}
+
 // TestRenderSidebar_DimsHexBranch asserts an unrenamed `claude/<8hex>` branch
 // renders without the BranchStyle color (DimStyle is used instead) so the
 // visual hint matches the spec — the user shouldn't see the placeholder branch

@@ -35,6 +35,12 @@ type SidebarItem struct {
 type RepoGroupInfo struct {
 	SessionCount int
 	StatusCounts map[session.Status]int
+	// AllWorktrees is true when every session in the group lives in a linked
+	// worktree (GetRepoRoot != GetMainRepo) rather than the main checkout.
+	// Drives whether the header suppresses its main-repo branch/dirty/PR chrome
+	// (which is noise when each session row already shows its own).
+	// False for an empty group.
+	AllWorktrees bool
 }
 
 // BuildFlatItems groups sessions by repo and flattens into a navigable list.
@@ -144,10 +150,16 @@ func BuildFlatItems(sessions []*session.Session, pending []*PendingWorkspace, ex
 func CollectGroupInfo(sessions []*session.Session, repoPath string) RepoGroupInfo {
 	info := RepoGroupInfo{StatusCounts: make(map[session.Status]int)}
 	groups := session.GroupByRepo(sessions)
-	for _, s := range groups[repoPath] {
+	groupSessions := groups[repoPath]
+	allWorktrees := len(groupSessions) > 0
+	for _, s := range groupSessions {
 		info.SessionCount++
 		info.StatusCounts[s.GetStatus()]++
+		if session.GetRepoRoot(s.ProjectPath) == session.GetMainRepo(s.ProjectPath) {
+			allWorktrees = false
+		}
 	}
+	info.AllWorktrees = allWorktrees
 	return info
 }
 
@@ -290,10 +302,12 @@ func renderRepoHeader(repoPath string, expanded bool, info RepoGroupInfo, repoIn
 		expandIcon = "▾"
 	}
 
-	// Git branch + dirty indicator.
+	// Git branch + dirty indicator. Suppressed when every session in the group
+	// is a worktree — the main repo's branch/dirty state is unrelated to where
+	// work is happening, and the per-session rows already carry that info.
 	branchStr := ""
 	dirtyStr := ""
-	if repoInfo != nil {
+	if repoInfo != nil && !info.AllWorktrees {
 		if repoInfo.Branch != "" {
 			branch := repoInfo.Branch
 			// Strip username prefix (e.g. "yuval/brz-123" → "brz-123").
@@ -336,9 +350,13 @@ func renderRepoHeader(repoPath string, expanded bool, info RepoGroupInfo, repoIn
 		statsStr = " " + strings.Join(indicators, " ")
 	}
 
-	// PR badge.
+	// PR badge. Same reasoning as branch/dirty above: when every session in
+	// the group is a worktree, the main repo's PR (tracked off its current
+	// branch) isn't the PR a user cares about — each worktree row carries its
+	// own. (Empty groups have AllWorktrees=false by construction, so a pinned
+	// repo with an open MR on its main branch still surfaces it.)
 	prStr := ""
-	if repoInfo != nil && repoInfo.PR != nil {
+	if repoInfo != nil && repoInfo.PR != nil && !info.AllWorktrees {
 		prStr = " " + renderPRBadge(repoInfo.PR, selected)
 	}
 
