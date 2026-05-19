@@ -1220,7 +1220,7 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return h, h.openEditorSelected()
 	case "p":
-		h.actionLog.Add("open PR", "", true)
+		h.actionLog.Add("open PR/MR", "", true)
 		analytics.Track(analytics.EventPROpened, nil)
 		return h, h.openPRInBrowser()
 	case "Y":
@@ -2148,8 +2148,8 @@ func (h *Home) openPRInBrowser() tea.Cmd {
 	}
 	h.workerMu.Unlock()
 	if info == nil || info.PR == nil || info.PR.URL == "" {
-		debuglog.Logger.Debug("openPR: no PR for branch", "repo", repo)
-		h.setError(fmt.Errorf("no PR for this branch"))
+		debuglog.Logger.Debug("openPR: no PR/MR for branch", "repo", repo)
+		h.setError(fmt.Errorf("no PR/MR for this branch"))
 		return nil
 	}
 
@@ -2171,8 +2171,8 @@ func (h *Home) openPRInBrowser() tea.Cmd {
 			// Fallback to macOS open command.
 			debuglog.Logger.Debug("chrome extension unavailable, falling back to open", "err", err)
 			if openErr := exec.Command("open", prURL).Start(); openErr != nil {
-				debuglog.Logger.Error("failed to open PR in browser", "url", prURL, "err", openErr)
-				return openPRMsg{err: fmt.Errorf("open PR: %w", openErr)}
+				debuglog.Logger.Error("failed to open PR/MR in browser", "url", prURL, "err", openErr)
+				return openPRMsg{err: fmt.Errorf("open PR/MR: %w", openErr)}
 			}
 		}
 		return openPRMsg{}
@@ -3619,7 +3619,7 @@ func (h *Home) buildPaletteCommands() []PaletteCommand {
 		{ID: "restart", Name: "Restart Session", Shortcut: "r"},
 		{ID: "rename", Name: "Rename Session", Shortcut: "R"},
 		{ID: "editor", Name: "Open in Editor", Shortcut: "e"},
-		{ID: "open_pr", Name: "Open PR", Shortcut: "p"},
+		{ID: "open_pr", Name: "Open PR / MR", Shortcut: "p"},
 		{ID: "approve", Name: "Quick Approve", Shortcut: "Y"},
 		{ID: "branch", Name: "Switch Branch", Shortcut: "b"},
 		{ID: "filter", Name: "Filter Sessions", Shortcut: "/"},

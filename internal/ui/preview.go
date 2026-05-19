@@ -168,10 +168,16 @@ func renderGitInfoLine(info *git.RepoInfo) string {
 		parts = append(parts, DirtyStyle.Render("* uncommitted"))
 	}
 
-	// PR info.
+	// PR / MR info. GitLab calls these merge requests and references them with
+	// `!N`; GitHub uses `#N` for pull requests. (On GitLab `#N` is a work-item /
+	// issue, so using it for an MR would be actively wrong.)
 	if info.PR != nil && info.PR.State != "CLOSED" {
 		pr := info.PR
-		prText := fmt.Sprintf("PR #%d", pr.Number)
+		label, sigil := "PR", "#"
+		if pr.Forge == "gitlab" {
+			label, sigil = "MR", "!"
+		}
+		prText := fmt.Sprintf("%s %s%d", label, sigil, pr.Number)
 
 		if pr.State == "MERGED" {
 			parts = append(parts, PRMergedStyle.Render(prText+" (merged)"))
