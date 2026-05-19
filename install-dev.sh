@@ -107,15 +107,6 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo "    export PATH=\"$INSTALL_DIR:\$PATH\""
 fi
 
-# Auto-update would happily replace a fork build with the latest official
-# release. Remind the user to opt out so their fork sticks around.
-echo ""
-echo "Tip: disable the auto-updater so it doesn't replace your fork build with"
-echo "     the upstream release. Either set in ~/.config/fleet/config.json:"
-echo '         { "auto_update": false }'
-echo "     or export the env var (also handy for one-off dev sessions):"
-echo "         export FLEET_AUTO_UPDATE_DISABLED=1"
-
 # Quick dependency sanity check (same checks install.sh does).
 echo ""
 if command -v tmux &>/dev/null; then

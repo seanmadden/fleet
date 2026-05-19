@@ -31,60 +31,6 @@ func TestIsAutoNameEnabled(t *testing.T) {
 	})
 }
 
-func TestIsAutoUpdateEnabled(t *testing.T) {
-	t.Run("nil defaults to true", func(t *testing.T) {
-		cfg := &Config{}
-		if !cfg.IsAutoUpdateEnabled() {
-			t.Error("expected true when AutoUpdate is nil")
-		}
-	})
-
-	t.Run("true", func(t *testing.T) {
-		v := true
-		cfg := &Config{AutoUpdate: &v}
-		if !cfg.IsAutoUpdateEnabled() {
-			t.Error("expected true")
-		}
-	})
-
-	t.Run("false", func(t *testing.T) {
-		v := false
-		cfg := &Config{AutoUpdate: &v}
-		if cfg.IsAutoUpdateEnabled() {
-			t.Error("expected false")
-		}
-	})
-
-	t.Run("FLEET_AUTO_UPDATE_DISABLED overrides config=true", func(t *testing.T) {
-		t.Setenv("FLEET_AUTO_UPDATE_DISABLED", "1")
-		v := true
-		cfg := &Config{AutoUpdate: &v}
-		if cfg.IsAutoUpdateEnabled() {
-			t.Error("env var should override config=true")
-		}
-	})
-
-	t.Run("FLEET_AUTO_UPDATE_DISABLED accepts truthy values", func(t *testing.T) {
-		for _, val := range []string{"1", "true", "TRUE", "yes", "y", "on"} {
-			t.Setenv("FLEET_AUTO_UPDATE_DISABLED", val)
-			cfg := &Config{}
-			if cfg.IsAutoUpdateEnabled() {
-				t.Errorf("value %q should disable auto-update", val)
-			}
-		}
-	})
-
-	t.Run("FLEET_AUTO_UPDATE_DISABLED ignores non-truthy values", func(t *testing.T) {
-		for _, val := range []string{"", "0", "false", "no", "off", "garbage"} {
-			t.Setenv("FLEET_AUTO_UPDATE_DISABLED", val)
-			cfg := &Config{} // default true
-			if !cfg.IsAutoUpdateEnabled() {
-				t.Errorf("value %q should NOT disable auto-update (default true)", val)
-			}
-		}
-	})
-}
-
 func TestGetEditor(t *testing.T) {
 	t.Run("configured", func(t *testing.T) {
 		cfg := &Config{Editor: "vim"}
@@ -190,7 +136,6 @@ func TestGetEnterMode(t *testing.T) {
 
 func TestConfigJSONRoundTrip(t *testing.T) {
 	autoName := true
-	autoUpdate := false
 	copySettings := true
 	original := &Config{
 		TickIntervalSec:    5,
@@ -198,7 +143,6 @@ func TestConfigJSONRoundTrip(t *testing.T) {
 		Editor:             "nvim",
 		Theme:              "catppuccin-mocha",
 		AutoNameSessions:   &autoName,
-		AutoUpdate:         &autoUpdate,
 		CopyClaudeSettings: &copySettings,
 		EnterMode:          "split",
 	}
@@ -228,9 +172,6 @@ func TestConfigJSONRoundTrip(t *testing.T) {
 	if loaded.AutoNameSessions == nil || *loaded.AutoNameSessions != *original.AutoNameSessions {
 		t.Errorf("AutoNameSessions mismatch")
 	}
-	if loaded.AutoUpdate == nil || *loaded.AutoUpdate != *original.AutoUpdate {
-		t.Errorf("AutoUpdate mismatch")
-	}
 	if loaded.CopyClaudeSettings == nil || *loaded.CopyClaudeSettings != *original.CopyClaudeSettings {
 		t.Errorf("CopyClaudeSettings mismatch")
 	}
@@ -259,9 +200,6 @@ func TestConfigUnmarshalPartialJSON(t *testing.T) {
 	}
 	if cfg.AutoNameSessions != nil {
 		t.Error("expected AutoNameSessions to be nil for unset field")
-	}
-	if cfg.AutoUpdate != nil {
-		t.Error("expected AutoUpdate to be nil for unset field")
 	}
 }
 

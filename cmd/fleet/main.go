@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"text/tabwriter"
 
 	"github.com/brizzai/fleet/internal/config"
@@ -15,7 +14,6 @@ import (
 	"github.com/brizzai/fleet/internal/session"
 	"github.com/brizzai/fleet/internal/tmux"
 	"github.com/brizzai/fleet/internal/ui"
-	"github.com/brizzai/fleet/internal/update"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -65,8 +63,6 @@ func main() {
 		handleChromeHost()
 	case "hooks":
 		handleHooksCmd(args[1:])
-	case "update":
-		runUpdate()
 	case "version", "--version", "-v":
 		fmt.Printf("fleet %s\n", version)
 	case "help", "--help", "-h":
@@ -94,22 +90,6 @@ func runTUI() {
 	}
 
 	cfg := config.Load()
-
-	// Auto-update: check for newer version on launch.
-	if cfg.IsAutoUpdateEnabled() && version != "dev" && update.ShouldCheck() {
-		debuglog.Logger.Info("checking for updates", "current", version)
-		newVer, err := update.Update(version)
-		if err != nil {
-			debuglog.Logger.Error("auto-update failed", "err", err)
-		} else if newVer != "" {
-			debuglog.Logger.Info("auto-updated", "from", version, "to", newVer)
-			fmt.Printf("Updated fleet to %s, restarting...\n", newVer)
-			exe, _ := os.Executable()
-			syscall.Exec(exe, os.Args, os.Environ())
-		} else {
-			debuglog.Logger.Info("already up to date", "version", version)
-		}
-	}
 
 	storage, err := session.Open(session.DefaultDBPath())
 	if err != nil {
@@ -245,21 +225,6 @@ func runRemove(idPrefix string) {
 	fmt.Printf("Removed session '%s' (%s)\n", match.Title, match.ID)
 }
 
-func runUpdate() {
-	fmt.Printf("fleet %s\n", version)
-	fmt.Println("Checking for updates...")
-	newVer, err := update.Update(version)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
-		os.Exit(1)
-	}
-	if newVer == "" {
-		fmt.Println("Already up to date.")
-	} else {
-		fmt.Printf("Updated to %s\n", newVer)
-	}
-}
-
 func printUsage() {
 	fmt.Printf("fleet %s - manage Claude Code sessions\n", version)
 	fmt.Println(`
@@ -269,7 +234,6 @@ Usage:
   fleet list         List all sessions
   fleet remove <id>  Remove a session
   fleet hooks <install|uninstall|status>  Manage Claude Code hooks
-  fleet update       Update to latest version
   fleet version      Show version
   fleet help         Show this help`)
 }

@@ -71,10 +71,7 @@ git clone <your-fork-url> && cd fleet
 Subsequent `make build` runs are picked up automatically (the install is a
 symlink into `build/`). Add `--copy` to install a static copy, `--dir <path>`
 to install elsewhere, or `--name fleet-dev` to install under an alternate
-name so it doesn't shadow your Homebrew install. Disable the auto-updater
-(`auto_update: false` in `~/.config/fleet/config.json`, or
-`FLEET_AUTO_UPDATE_DISABLED=1`) so fork builds don't get replaced by the
-upstream release.
+name so it doesn't shadow your Homebrew install.
 
 ### Requirements
 

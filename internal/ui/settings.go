@@ -53,7 +53,7 @@ func (d *SettingsDialog) Update(msg tea.Msg) (*SettingsDialog, tea.Cmd) {
 		return d, nil
 	}
 
-	numRows := 9 // theme, editor, tick, auto-name, auto-update, copy-claude, enter-mode, focus-on-new, telemetry
+	numRows := 8 // theme, editor, tick, auto-name, copy-claude, enter-mode, focus-on-new, telemetry
 	switch keyMsg.String() {
 	case "j", "down":
 		d.cursor = (d.cursor + 1) % numRows
@@ -116,29 +116,24 @@ func (d *SettingsDialog) cycleValue(dir int) {
 		enabled = !enabled
 		d.cfg.AutoNameSessions = &enabled
 
-	case 4: // Auto-update
-		enabled := d.cfg.IsAutoUpdateEnabled()
-		enabled = !enabled
-		d.cfg.AutoUpdate = &enabled
-
-	case 5: // Copy Claude settings
+	case 4: // Copy Claude settings
 		enabled := d.cfg.IsCopyClaudeSettingsEnabled()
 		enabled = !enabled
 		d.cfg.CopyClaudeSettings = &enabled
 
-	case 6: // Enter mode
+	case 5: // Enter mode
 		if d.cfg.GetEnterMode() == "attach" {
 			d.cfg.EnterMode = "split"
 		} else {
 			d.cfg.EnterMode = "attach"
 		}
 
-	case 7: // Focus on new session
+	case 6: // Focus on new session
 		enabled := d.cfg.IsFocusOnNewSessionEnabled()
 		enabled = !enabled
 		d.cfg.FocusOnNewSession = &enabled
 
-	case 8: // Telemetry
+	case 7: // Telemetry
 		enabled := d.cfg.IsTelemetryEnabled()
 		enabled = !enabled
 		d.cfg.Telemetry = &enabled
@@ -164,11 +159,6 @@ func (d *SettingsDialog) View() string {
 		autoNameValue = "off"
 	}
 
-	autoUpdateValue := "on"
-	if !d.cfg.IsAutoUpdateEnabled() {
-		autoUpdateValue = "off"
-	}
-
 	copyClaudeValue := "on"
 	if !d.cfg.IsCopyClaudeSettingsEnabled() {
 		copyClaudeValue = "off"
@@ -189,7 +179,6 @@ func (d *SettingsDialog) View() string {
 		{"Editor", d.cfg.GetEditor()},
 		{"Tick (sec)", fmt.Sprintf("%d", d.cfg.TickIntervalSec)},
 		{"Auto-name", autoNameValue},
-		{"Auto-update", autoUpdateValue},
 		{"Copy .claude", copyClaudeValue},
 		{"Enter mode", d.cfg.GetEnterMode()},
 		{"Focus on new", focusOnNewValue},
