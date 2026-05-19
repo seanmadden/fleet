@@ -875,7 +875,7 @@ func (h *Home) renderBody() string {
 		b.WriteString(DimStyle.Render(strings.Repeat("─", h.width)))
 		b.WriteString("\n")
 		s, content := h.selectedPreview()
-		preview := RenderPreview(s, content, h.repoInfoFromSnap(gitInfoSnap), h.width, previewHeight, h.focusMode)
+		preview := RenderPreview(s, content, h.repoInfoFromSnap(gitInfoSnap, sessionInfoSnap), h.width, previewHeight, h.focusMode)
 		b.WriteString(preview)
 	default: // dual
 		sidebarWidth := h.width * 35 / 100
@@ -897,7 +897,7 @@ func (h *Home) renderBody() string {
 		}
 
 		s, content := h.selectedPreview()
-		rightPanel := RenderPreview(s, content, h.repoInfoFromSnap(gitInfoSnap), previewWidth, contentHeight, h.focusMode)
+		rightPanel := RenderPreview(s, content, h.repoInfoFromSnap(gitInfoSnap, sessionInfoSnap), previewWidth, contentHeight, h.focusMode)
 
 		// Build separator as explicit lines.
 		sepColor := ColorBorder
@@ -3215,6 +3215,14 @@ func (h *Home) moveSessionInGroup(s *session.Session, dir int) {
 
 // moveRepoGroup swaps a repo's sidebar position with the neighbour in the given
 // direction. Out-of-bounds moves are silent.
+//
+// Implementation note: instead of swapping the two affected repos' sort_keys in
+// place, we renumber every on-screen repo with a fresh sequential key (100,
+// 200, …) reflecting the post-swap order. The older "swap with (idx+1)*100
+// fallback seeding" approach silently no-op'd when the seeded value collided
+// with an already-stored key on a third repo — e.g. moving an unseeded repo
+// next to one whose stored key happened to equal (idx+1)*100 left both repos
+// sharing the same key, falling through to the alphabetical tiebreaker.
 func (h *Home) moveRepoGroup(repoPath string, dir int) {
 	// Reproduce BuildFlatItems' repo ordering: same set (sessions ∪ pending ∪
 	// pinned), same comparator. This is the authoritative "what's on screen" list.
@@ -3257,44 +3265,35 @@ func (h *Home) moveRepoGroup(repoPath string, dir int) {
 		return // first/last repo — silent no-op
 	}
 
-	repoA := repos[idx]
-	repoB := repos[other]
+	repos[idx], repos[other] = repos[other], repos[idx]
+	movedRepo := repos[other]
 
-	// Seed sort_keys for any repo that's still on the alphabetical fallback.
-	// We compute defaults from current positions before the swap so the order
-	// from there forward is fully defined by repo_order alone.
-	keyA, hasA := h.repoOrder[repoA]
-	keyB, hasB := h.repoOrder[repoB]
-	if !hasA || keyA == 0 {
-		keyA = int64((idx + 1) * 100)
-	}
-	if !hasB || keyB == 0 {
-		keyB = int64((other + 1) * 100)
-	}
-	// Swap.
-	h.repoOrder[repoA] = keyB
-	h.repoOrder[repoB] = keyA
-
-	if err := h.storage.UpsertRepoOrder(repoA, keyB); err != nil {
-		h.setError(fmt.Errorf("reorder repo: %w", err))
-		return
-	}
-	if err := h.storage.UpsertRepoOrder(repoB, keyA); err != nil {
-		h.setError(fmt.Errorf("reorder repo: %w", err))
-		return
+	// Assign sequential keys to every on-screen repo in the new order. This
+	// guarantees unique keys so the next move can't collide with a stale
+	// fallback value.
+	for i, r := range repos {
+		newKey := int64((i + 1) * 100)
+		if existing, ok := h.repoOrder[r]; ok && existing == newKey {
+			continue
+		}
+		h.repoOrder[r] = newKey
+		if err := h.storage.UpsertRepoOrder(r, newKey); err != nil {
+			h.setError(fmt.Errorf("reorder repo: %w", err))
+			return
+		}
 	}
 
 	h.rebuildFlatItems()
 
 	// Re-anchor the cursor to the moved repo header.
 	for i, it := range h.flatItems {
-		if it.IsRepoHeader && it.RepoPath == repoA {
+		if it.IsRepoHeader && it.RepoPath == movedRepo {
 			h.cursor = i
 			break
 		}
 	}
 	h.syncViewport()
-	h.actionLog.Add("reorder repo", fmt.Sprintf("%s (%s)", filepath.Base(repoA), dirLabel(dir)), true)
+	h.actionLog.Add("reorder repo", fmt.Sprintf("%s (%s)", filepath.Base(movedRepo), dirLabel(dir)), true)
 }
 
 func dirLabel(dir int) string {
@@ -3371,17 +3370,26 @@ func (h *Home) selectedPreview() (*session.Session, string) {
 	return s, content
 }
 
-// repoInfoFromSnap returns repo info for the selected session using a snapshot
-// of gitInfoCache. Safe to call from View() without holding workerMu.
-// gitInfoCache is keyed by main-repo path (see uniqueRepoPathsFromSessions);
-// translate the session's project path so worktree sessions still find their
-// group's repo info.
-func (h *Home) repoInfoFromSnap(snap map[string]*git.RepoInfo) *git.RepoInfo {
+// repoInfoFromSnap returns repo info for the selected session using snapshots
+// of gitInfoCache (main-repo keyed) and sessionGitInfo (session-ID keyed).
+// Safe to call from View() without holding workerMu.
+//
+// For worktree-backed sessions (GetRepoRoot != GetMainRepo) the per-session
+// info wins, so the preview's branch/dirty/PR line reflects the worktree's
+// own `claude/<slug>` branch rather than the main repo's current branch.
+// No-worktree sessions fall back to the main-repo cache, matching the
+// group-header chrome.
+func (h *Home) repoInfoFromSnap(repoSnap, sessionSnap map[string]*git.RepoInfo) *git.RepoInfo {
 	s := h.selectedSession()
 	if s == nil {
 		return nil
 	}
-	return snap[session.GetMainRepo(s.ProjectPath)]
+	if session.GetRepoRoot(s.ProjectPath) != session.GetMainRepo(s.ProjectPath) {
+		if info, ok := sessionSnap[s.ID]; ok {
+			return info
+		}
+	}
+	return repoSnap[session.GetMainRepo(s.ProjectPath)]
 }
 
 // --- Internal helpers ---

@@ -175,6 +175,79 @@ func TestMoveCursorItemRepoReorder(t *testing.T) {
 	}
 }
 
+// TestMoveCursorItemRepoReorderSeededCollision reproduces the "stuck shift+↑/↓"
+// repo bug: when one repo has a stored sort_key (e.g. from a prior reorder) and
+// neighbouring repos are still on the alphabetical fallback (key=0), the
+// seeding formula (idx+1)*100 used by moveRepoGroup can mint a key equal to an
+// existing stored key. After the swap both repos share the same key, the
+// alphabetical tiebreaker takes over, and the move is a visual no-op.
+func TestMoveCursorItemRepoReorderSeededCollision(t *testing.T) {
+	h := newTestHome(t)
+	now := time.Now().Truncate(time.Second)
+	// Three repos. /tmp/ccc has a pre-existing stored key of 100 (simulating
+	// a prior reorder); /tmp/aaa and /tmp/bbb are unseeded.
+	seedSessions(t, h, []*session.SessionRow{
+		{ID: "sa", Title: "A", ProjectPath: "/tmp/aaa", Status: "idle", CreatedAt: now},
+		{ID: "sb", Title: "B", ProjectPath: "/tmp/bbb", Status: "idle", CreatedAt: now},
+		{ID: "sc", Title: "C", ProjectPath: "/tmp/ccc", Status: "idle", CreatedAt: now},
+	})
+	if err := h.storage.UpsertRepoOrder("/tmp/ccc", 100); err != nil {
+		t.Fatalf("UpsertRepoOrder: %v", err)
+	}
+	h.repoOrder["/tmp/ccc"] = 100
+	h.rebuildFlatItems()
+
+	// Visual order should be aaa (0/alpha), bbb (0/alpha), ccc (100).
+	aIdx := findFlatRepoIdx(h, "/tmp/aaa")
+	bIdx := findFlatRepoIdx(h, "/tmp/bbb")
+	cIdx := findFlatRepoIdx(h, "/tmp/ccc")
+	if !(aIdx >= 0 && bIdx >= 0 && cIdx >= 0 && aIdx < bIdx && bIdx < cIdx) {
+		t.Fatalf("expected aaa<bbb<ccc, got aaa=%d bbb=%d ccc=%d", aIdx, bIdx, cIdx)
+	}
+
+	// Move /tmp/bbb up — swap with /tmp/aaa. Expected order: bbb, aaa, ccc.
+	h.cursor = bIdx
+	h.moveCursorItem(-1)
+
+	aIdx2 := findFlatRepoIdx(h, "/tmp/aaa")
+	bIdx2 := findFlatRepoIdx(h, "/tmp/bbb")
+	cIdx2 := findFlatRepoIdx(h, "/tmp/ccc")
+	if !(bIdx2 < aIdx2 && aIdx2 < cIdx2) {
+		t.Errorf("expected bbb<aaa<ccc after move-up, got bbb=%d aaa=%d ccc=%d", bIdx2, aIdx2, cIdx2)
+	}
+
+	// Cursor should follow /tmp/bbb to its new slot.
+	if h.cursor != bIdx2 {
+		t.Errorf("cursor did not follow /tmp/bbb: cursor=%d, bbb at %d", h.cursor, bIdx2)
+	}
+
+	// All three repos should now have distinct stored keys (no collision).
+	loaded, err := h.storage.LoadRepoOrder()
+	if err != nil {
+		t.Fatalf("LoadRepoOrder: %v", err)
+	}
+	keys := map[string]int64{
+		"/tmp/aaa": loaded["/tmp/aaa"],
+		"/tmp/bbb": loaded["/tmp/bbb"],
+		"/tmp/ccc": loaded["/tmp/ccc"],
+	}
+	if keys["/tmp/aaa"] == 0 && keys["/tmp/bbb"] == 0 {
+		// At least the two swapped repos must be persisted with non-zero keys
+		// so the swap survives the next collision-prone formula application.
+		t.Errorf("expected swapped repos to have non-zero stored keys, got %v", keys)
+	}
+	seen := make(map[int64]string)
+	for repo, k := range keys {
+		if k == 0 {
+			continue
+		}
+		if other, dup := seen[k]; dup {
+			t.Errorf("duplicate stored key %d for %s and %s (will collide on next move)", k, repo, other)
+		}
+		seen[k] = repo
+	}
+}
+
 func TestMoveCursorItemBoundaryNoOp(t *testing.T) {
 	h := newTestHome(t)
 	now := time.Now().Truncate(time.Second)
