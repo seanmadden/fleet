@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -88,12 +89,15 @@ func (s *Session) Attach(ctx context.Context) error {
 		_, _ = io.Copy(os.Stdout, ptmx)
 	}()
 
-	// Goroutine: forward stdin to PTY. tmux handles its own detach chord, so
-	// fleet doesn't intercept anything — every byte passes through.
+	// Goroutine: forward stdin to PTY using a wakeable poll so the loop exits
+	// the instant ctx is cancelled. A plain io.Copy(ptmx, os.Stdin) would leave
+	// this goroutine blocked in Read past detach, and the next post-detach
+	// keystroke would be eaten by it (forwarded into a closed ptmx) instead of
+	// reaching the fleet TUI — the symptom was "j/k doesn't move on first press".
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(ptmx, os.Stdin)
+		forwardStdinToPTY(ctx, ptmx)
 	}()
 
 	// Wait for the attach-session command to finish (detach or exit).
@@ -117,6 +121,60 @@ func (s *Session) Attach(ctx context.Context) error {
 	attachErr := waitForDetach(ctx, cmdDone)
 	cleanupAttach()
 	return attachErr
+}
+
+// forwardStdinToPTY forwards stdin bytes to the PTY until ctx cancels. Uses a
+// self-pipe registered with unix.Poll so cancellation wakes the loop immediately
+// — without it, a goroutine blocked in os.Stdin.Read would consume the first
+// post-detach keystroke meant for the fleet TUI.
+func forwardStdinToPTY(ctx context.Context, ptmx *os.File) {
+	wakeR, wakeW, err := os.Pipe()
+	if err != nil {
+		// Pipe allocation failure is extraordinarily rare. Fall back to a plain
+		// copy; the worst case is the known "first keypress eaten" symptom.
+		_, _ = io.Copy(ptmx, os.Stdin)
+		return
+	}
+	defer wakeR.Close()
+	defer wakeW.Close()
+
+	// Close the pipe's write-end when ctx cancels — this makes wakeR readable
+	// and breaks the Poll below.
+	go func() {
+		<-ctx.Done()
+		_ = wakeW.Close()
+	}()
+
+	stdinFd := int32(os.Stdin.Fd())
+	wakeFd := int32(wakeR.Fd())
+	buf := make([]byte, 32)
+
+	for {
+		pfds := []unix.PollFd{
+			{Fd: stdinFd, Events: unix.POLLIN},
+			{Fd: wakeFd, Events: unix.POLLIN},
+		}
+		if _, err := unix.Poll(pfds, -1); err != nil {
+			if err == unix.EINTR {
+				continue
+			}
+			return
+		}
+		// Cancel takes priority — exit before reading anything else.
+		if pfds[1].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
+			return
+		}
+		if pfds[0].Revents&unix.POLLIN == 0 {
+			continue
+		}
+		n, rerr := os.Stdin.Read(buf)
+		if rerr != nil || n == 0 {
+			return
+		}
+		if _, werr := ptmx.Write(buf[:n]); werr != nil {
+			return
+		}
+	}
 }
 
 // waitForDetach waits for the attach-session command to exit or context cancellation.
