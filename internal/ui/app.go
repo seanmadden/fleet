@@ -1144,19 +1144,6 @@ func (h *Home) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		h.expandRepoAtCursor()
 		return h, nil
 	case "a":
-		// Instant session at current repo path.
-		repoPath := h.resolveCurrentRepo()
-		if repoPath == "" {
-			h.newDialog.Show()
-			return h, nil
-		}
-		repoName := filepath.Base(repoPath)
-		h.actionLog.Add("create session", repoPath, true)
-		return h.handleSessionCreate(sessionCreateMsg{
-			path:  repoPath,
-			title: repoName,
-		})
-	case "n":
 		// Worktree-by-default: spin up a `claude/<8hex>` worktree in the repo
 		// at the cursor without any dialog. The historic path-picker lives on
 		// in the palette as "New Session at Path".
@@ -1409,7 +1396,7 @@ func (a attachCmd) SetStderr(w io.Writer) {}
 // uses this to decide whether to attempt a `git branch -m` to `claude/<slug>`.
 var claudeBranchExistingRE = regexp.MustCompile(`^claude/[0-9a-f]{8}$`)
 
-// startWorktreeSessionAtCursor handles the `n` key: resolves the repo at the
+// startWorktreeSessionAtCursor handles the `a` key: resolves the repo at the
 // cursor (using cursor-locality semantics) and dispatches a workspaceCreateMsg
 // for a `claude/<8hex>` worktree against the main repo. If the cursor isn't on
 // anything resolvable (e.g. empty sidebar), falls back to the path-picker.
@@ -3608,8 +3595,7 @@ func (h *Home) buildPaletteCommands() []PaletteCommand {
 		{ID: "attach", Name: "Attach Session", Shortcut: "Enter"},
 		{ID: "focus", Name: "Focus Preview", Shortcut: "Tab"},
 		{ID: "jump_next", Name: "Jump to Next Waiting", Shortcut: "Space"},
-		{ID: "new_session", Name: "New Session", Shortcut: "a"},
-		{ID: "new_repo", Name: "New Session (Worktree)", Shortcut: "n"},
+		{ID: "new_session", Name: "New Session (Worktree)", Shortcut: "a"},
 		{ID: "new_worktree", Name: "New Session in Existing Worktree"},
 		{ID: "new_session_at_path", Name: "New Session at Path"},
 		{ID: "fork", Name: "Fork Session", Shortcut: "f"},
@@ -3645,19 +3631,8 @@ func (h *Home) dispatchCommand(id string) (tea.Model, tea.Cmd) {
 		analytics.Track(analytics.EventSpaceJump, nil)
 		return h, h.fetchPreviewForSelected()
 	case "new_session":
-		repoPath := h.resolveCurrentRepo()
-		if repoPath == "" {
-			h.newDialog.Show()
-			return h, nil
-		}
-		h.actionLog.Add("create session", repoPath, true)
-		return h.handleSessionCreate(sessionCreateMsg{
-			path:  repoPath,
-			title: filepath.Base(repoPath),
-		})
-	case "new_repo":
-		// Mirror the `n` key: instant worktree session at cursor (or path
-		// picker fallback if there's no cursor target).
+		// Instant worktree session at cursor (or path picker fallback if
+		// there's no cursor target).
 		return h.startWorktreeSessionAtCursor()
 	case "new_worktree":
 		// Existing worktrees: show the picker so the user can attach a session
