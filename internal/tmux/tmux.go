@@ -144,7 +144,7 @@ func (s *Session) Start(command string, env ...string) error {
 // ConfigureStatusBar sets up the tmux status bar with detach hint and session info.
 func (s *Session) ConfigureStatusBar() {
 	folderName := filepath.Base(s.WorkDir)
-	rightStatus := fmt.Sprintf("#[fg=#565f89]ctrl+q detach#[default] │ 📁 %s | %s ", s.DisplayName, folderName)
+	rightStatus := fmt.Sprintf("#[fg=#565f89]ctrl+b d detach#[default] │ 📁 %s | %s ", s.DisplayName, folderName)
 	cmd := exec.Command("tmux",
 		"set-option", "-t", s.Name, "status", "on", ";",
 		"set-option", "-t", s.Name, "status-style", "bg=#1a1b26,fg=#a9b1d6", ";",

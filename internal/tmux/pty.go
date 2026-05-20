@@ -3,7 +3,6 @@
 package tmux
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -20,8 +19,10 @@ import (
 
 const terminalStyleReset = "\x1b]8;;\x1b\\\x1b[0m\x1b[24m\x1b[39m\x1b[49m"
 
-// Attach attaches to the tmux session with full PTY support.
-// Ctrl+Q detaches and returns to the caller. Ctrl+b d also works (tmux native).
+// Attach attaches to the tmux session with full PTY support. Detach uses
+// tmux's native prefix-d chord — Ctrl+B D by default, or whatever the user's
+// tmux prefix is configured to. The chord exits the attach-session subprocess,
+// which we catch via cmdDone and return cleanly to the caller (fleet TUI).
 func (s *Session) Attach(ctx context.Context) error {
 	if !s.Exists() {
 		return fmt.Errorf("session %s does not exist", s.Name)
@@ -77,10 +78,6 @@ func (s *Session) Attach(ctx context.Context) error {
 	// Initial resize.
 	sigwinch <- syscall.SIGWINCH
 
-	detachCh := make(chan struct{})
-	ioErrors := make(chan error, 2)
-	startTime := time.Now()
-	const controlSeqTimeout = 50 * time.Millisecond
 	outputDone := make(chan struct{})
 
 	// Goroutine: copy PTY output to stdout.
@@ -88,23 +85,18 @@ func (s *Session) Attach(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		defer close(outputDone)
-		_, err := io.Copy(os.Stdout, ptmx)
-		if err != nil && err != io.EOF {
-			select {
-			case ioErrors <- fmt.Errorf("PTY read error: %w", err):
-			default:
-			}
-		}
+		_, _ = io.Copy(os.Stdout, ptmx)
 	}()
 
-	// Goroutine: read stdin, intercept Ctrl+Q (ASCII 17), forward rest to PTY.
+	// Goroutine: forward stdin to PTY. tmux handles its own detach chord, so
+	// fleet doesn't intercept anything — every byte passes through.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		forwardStdinToPTY(ptmx, startTime, controlSeqTimeout, detachCh, cancel, ioErrors)
+		_, _ = io.Copy(ptmx, os.Stdin)
 	}()
 
-	// Wait for command to finish.
+	// Wait for the attach-session command to finish (detach or exit).
 	cmdDone := make(chan error, 1)
 	wg.Add(1)
 	go func() {
@@ -122,64 +114,14 @@ func (s *Session) Attach(ctx context.Context) error {
 		_, _ = os.Stdout.WriteString(terminalStyleReset)
 	}
 
-	// Wait for detach or command completion.
-	attachErr := waitForDetach(ctx, detachCh, cmdDone)
+	attachErr := waitForDetach(ctx, cmdDone)
 	cleanupAttach()
 	return attachErr
 }
 
-// forwardStdinToPTY reads stdin, intercepts Ctrl+Q for detach, forwards everything else to the PTY.
-func forwardStdinToPTY(ptmx *os.File, startTime time.Time, controlSeqTimeout time.Duration, detachCh chan struct{}, cancel context.CancelFunc, ioErrors chan<- error) {
-	buf := make([]byte, 32)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			if err != io.EOF {
-				select {
-				case ioErrors <- fmt.Errorf("stdin read error: %w", err):
-				default:
-				}
-			}
-			return
-		}
-
-		// Discard initial terminal control sequences.
-		if time.Since(startTime) < controlSeqTimeout {
-			continue
-		}
-
-		// Check for Ctrl+Q (ASCII 17).
-		if idx := bytes.IndexByte(buf[:n], 17); idx >= 0 {
-			if idx > 0 {
-				if _, werr := ptmx.Write(buf[:idx]); werr != nil {
-					select {
-					case ioErrors <- fmt.Errorf("PTY write error: %w", werr):
-					default:
-					}
-					return
-				}
-			}
-			close(detachCh)
-			cancel()
-			return
-		}
-
-		// Forward input to PTY.
-		if _, werr := ptmx.Write(buf[:n]); werr != nil {
-			select {
-			case ioErrors <- fmt.Errorf("PTY write error: %w", werr):
-			default:
-			}
-			return
-		}
-	}
-}
-
-// waitForDetach waits for detach signal, command completion, or context cancellation.
-func waitForDetach(ctx context.Context, detachCh <-chan struct{}, cmdDone <-chan error) error {
+// waitForDetach waits for the attach-session command to exit or context cancellation.
+func waitForDetach(ctx context.Context, cmdDone <-chan error) error {
 	select {
-	case <-detachCh:
-		return nil
 	case err := <-cmdDone:
 		return classifyExitError(ctx, err)
 	case <-ctx.Done():

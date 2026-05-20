@@ -41,7 +41,7 @@ Use [conventional commits](https://www.conventionalcommits.org/). Version is aut
 ```text
 cmd/fleet/main.go      # CLI entry point
 internal/tmux/tmux.go        # Tmux abstraction (create, kill, capture)
-internal/tmux/pty.go         # PTY-based attach with Ctrl+Q detach
+internal/tmux/pty.go         # PTY-based attach; detach via tmux prefix-d (Ctrl+B D)
 internal/session/session.go  # Session model, status detection, claude --resume
 internal/session/storage.go  # SQLite persistence (sessions + claude_session_id)
 internal/git/git.go          # Git operations (branch, dirty, worktree, origin remote URL)
@@ -86,8 +86,8 @@ chrome-extension/                # Chrome MV3 extension (service worker, manifes
 - Command palette (: / Ctrl+P): fuzzy-searchable list of all actions; palette-only commands include "Reload All Sessions" (restarts all dead/error sessions)
 - Undo delete: `z` key restores last deleted session within 5s window (stacked — multiple deletes each undoable). Tmux kept alive during window for full restore.
 - Pinned repos: repos auto-pinned on session creation, persist in SQLite. Empty repos show dimmed with "(empty)". `d` on empty repo header unpins it. `D` in delete dialog also removes repo.
-- Tmux status bar configured per session with detach hint (ctrl+q)
-- Attach uses PTY with Ctrl+Q intercept for clean detach (creack/pty + golang.org/x/term)
+- Tmux status bar configured per session with detach hint (ctrl+b d, the tmux prefix-d chord)
+- Attach uses PTY (creack/pty + golang.org/x/term); detach is tmux's native prefix-d chord — fleet doesn't intercept any keys, every byte passes through to tmux
 - Repo headers show branch name (), dirty indicator (*), and PR badge (#N)
 - PR badge sigil: `#N` for GitHub pull requests, `!N` for GitLab merge requests
 - Git info refreshes every 2s (branch/dirty), PR/MR info every 60s via the repo's forge provider (`gh` for GitHub, `glab` for GitLab)

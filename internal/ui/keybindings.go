@@ -55,7 +55,7 @@ var allKeyBindings = []KeyBinding{
 	{Key: "all keys", Desc: "Forwarded to session", Section: "focus"},
 
 	// Attach mode (shown in overlay only, separated by blank line).
-	{Key: "Ctrl+Q", Desc: "Detach from session", Section: "attach"},
+	{Key: "Ctrl+B D", Desc: "Detach from session (tmux prefix-d)", Section: "attach"},
 }
 
 // HelpBarBindings returns the bindings to show in the bottom help bar.

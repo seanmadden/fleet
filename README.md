@@ -117,7 +117,7 @@ Sessions live under their repo. Branch name, dirty state, and full PR status on 
 ### And more
 
 - **Session resume** — restart with **`r`**, Claude picks up exactly where it left off
-- **Full terminal attach** — **`Enter`** for full PTY, **`Tab`** for split mode (beta), **`Ctrl+Q`** to detach
+- **Full terminal attach** — **`Enter`** for full PTY, **`Tab`** for split mode (beta), **`Ctrl+B D`** to detach (tmux prefix-d)
 - **Auto-naming** — sessions title themselves from your prompt
 - **5 themes** — tokyo-night, catppuccin-mocha, rose-pine, nord, gruvbox (**`S`** to switch)
 - **Chrome tab control** — **`p`** opens the PR / merge request in Chrome, reuses existing tab
@@ -154,7 +154,7 @@ If you use Claude Code as your primary agent and want the tightest integration, 
 |-----|--------|
 | `j` / `k` | Navigate up/down |
 | `Enter` | Attach to session |
-| `Ctrl+Q` | Detach from session |
+| `Ctrl+B D` | Detach from session (tmux prefix-d) |
 | `Tab` | Focus/unfocus preview (split mode, beta) |
 | `Space` | Jump to next waiting/finished session |
 | `a` | New session (current repo) |

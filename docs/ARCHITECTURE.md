@@ -60,7 +60,7 @@ internal/
     storage.go         SQLite persistence (WAL mode)
   tmux/
     tmux.go            Tmux abstraction (create, kill, capture)
-    pty.go             PTY-based attach with Ctrl+Q detach
+    pty.go             PTY-based attach; detach via tmux prefix-d (Ctrl+B D)
   hooks/
     claude_hooks.go    Hook injection into ~/.claude/settings.json
     hook_watcher.go    Watches status files via fsnotify
@@ -137,7 +137,7 @@ CREATE:  User presses 'a'/'n' → dialog → tmux.NewSession() → set FLEET_INS
 
 RUNNING: Hook events → status files → HookWatcher → worker syncs → UI renders
 
-ATTACH:  Enter → fork PTY → raw terminal mode → Ctrl+Q detaches cleanly
+ATTACH:  Enter → fork PTY → raw terminal mode → Ctrl+B D (tmux prefix-d) detaches cleanly
 
 APPROVE: Y → tmux send-keys "y" + Enter (works for both Y/n and menu prompts)
 
