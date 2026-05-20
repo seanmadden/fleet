@@ -3141,6 +3141,15 @@ func (h *Home) moveCursorItem(dir int) {
 // moveSessionInGroup swaps a session with its same-repo neighbour in the
 // given direction. Out-of-bounds moves are silent (no toast, no log) to match
 // j/k navigation feel.
+//
+// Implementation note: the whole group is renumbered with fresh sequential keys
+// (100, 200, …) in the post-swap order rather than swapping just the two
+// affected sessions' keys. The "swap two, leave the rest at SortKey=0" approach
+// silently broke the first reorder in any group: legacy 0-key siblings sort
+// before the seeded pair in the global SortKey order, so the moved pair landed
+// at the bottom of the group instead of swapping in place. Renumbering every
+// group member gives every session an explicit key and keeps the swap local.
+// Mirrors moveRepoGroup's renumber-every-repo approach.
 func (h *Home) moveSessionInGroup(s *session.Session, dir int) {
 	// GroupByRepo now keys by main repo, so look up the group via main repo
 	// regardless of whether the session lives in a worktree or the main repo.
@@ -3161,30 +3170,24 @@ func (h *Home) moveSessionInGroup(s *session.Session, dir int) {
 		return // top/bottom of group — silent no-op, do not migrate across repos
 	}
 
-	a := groupSessions[idx]
-	b := groupSessions[other]
+	// Build the post-swap ordering of the group, then assign fresh sequential
+	// keys to every member.
+	reordered := make([]*session.Session, len(groupSessions))
+	copy(reordered, groupSessions)
+	reordered[idx], reordered[other] = reordered[other], reordered[idx]
 
-	// Compute sort_keys for the swap. If both are 0 (sentinel — never reordered
-	// before), seed them by their current position so the swap produces a stable
-	// result. Otherwise swap the existing values.
-	keyA, keyB := a.SortKey, b.SortKey
-	if keyA == 0 && keyB == 0 {
-		// Seed using slot positions, spaced so future inserts don't immediately
-		// collide. The "lower index = lower key" mapping mirrors the current
-		// (sort_key=0, created_at) order, then the swap flips them.
-		keyA = int64((idx + 1) * 100)
-		keyB = int64((other + 1) * 100)
-	}
-	// Swap: a takes b's key, b takes a's key.
-	a.SortKey, b.SortKey = keyB, keyA
-
-	if err := h.storage.UpdateSessionSortKey(a.ID, a.SortKey); err != nil {
-		h.setError(fmt.Errorf("reorder session: %w", err))
-		return
-	}
-	if err := h.storage.UpdateSessionSortKey(b.ID, b.SortKey); err != nil {
-		h.setError(fmt.Errorf("reorder session: %w", err))
-		return
+	// After the swap above, the originally-cursored session sits at `other`.
+	movedID := reordered[other].ID
+	for i, gs := range reordered {
+		newKey := int64((i + 1) * 100)
+		if gs.SortKey == newKey {
+			continue
+		}
+		gs.SortKey = newKey
+		if err := h.storage.UpdateSessionSortKey(gs.ID, newKey); err != nil {
+			h.setError(fmt.Errorf("reorder session: %w", err))
+			return
+		}
 	}
 
 	// Re-sort the in-memory session list so the next rebuildFlatItems sees the
@@ -3199,13 +3202,13 @@ func (h *Home) moveSessionInGroup(s *session.Session, dir int) {
 
 	// Re-anchor the cursor to the moved session.
 	for i, it := range h.flatItems {
-		if !it.IsRepoHeader && it.Session != nil && it.Session.ID == a.ID {
+		if !it.IsRepoHeader && it.Session != nil && it.Session.ID == movedID {
 			h.cursor = i
 			break
 		}
 	}
 	h.syncViewport()
-	h.actionLog.Add("reorder session", fmt.Sprintf("%s (%s)", a.Title, dirLabel(dir)), true)
+	h.actionLog.Add("reorder session", fmt.Sprintf("%s (%s)", s.Title, dirLabel(dir)), true)
 }
 
 // moveRepoGroup swaps a repo's sidebar position with the neighbour in the given

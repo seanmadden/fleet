@@ -124,6 +124,60 @@ func TestMoveCursorItemSessionReorder(t *testing.T) {
 	}
 }
 
+// TestMoveCursorItemSessionReorderThreePlus reproduces the "stuck shift+↑/↓"
+// session bug in a group of 3+ sessions. The old "seed only the swap pair"
+// code left the other group members at SortKey=0; after the global re-sort,
+// those zero-key siblings sorted *before* the seeded pair, so the first
+// reorder shoved both swapped sessions to the bottom of the group instead of
+// performing a local swap. With four sessions [a, b, c, d] and Shift+↓ on a,
+// the bug produced [c, d, b, a] instead of [b, a, c, d].
+func TestMoveCursorItemSessionReorderThreePlus(t *testing.T) {
+	h := newTestHome(t)
+	now := time.Now().Truncate(time.Second)
+	seedSessions(t, h, []*session.SessionRow{
+		{ID: "a", Title: "A", ProjectPath: "/tmp/repo", Status: "idle", CreatedAt: now},
+		{ID: "b", Title: "B", ProjectPath: "/tmp/repo", Status: "idle", CreatedAt: now.Add(1 * time.Second)},
+		{ID: "c", Title: "C", ProjectPath: "/tmp/repo", Status: "idle", CreatedAt: now.Add(2 * time.Second)},
+		{ID: "d", Title: "D", ProjectPath: "/tmp/repo", Status: "idle", CreatedAt: now.Add(3 * time.Second)},
+	})
+
+	// Cursor on a (first in group). Move down — expect [b, a, c, d].
+	h.cursor = findFlatSessionIdx(h, "a")
+	h.moveCursorItem(1)
+
+	groupAfter := session.GroupByRepo(h.sessions)["/tmp/repo"]
+	gotIDs := []string{groupAfter[0].ID, groupAfter[1].ID, groupAfter[2].ID, groupAfter[3].ID}
+	wantIDs := []string{"b", "a", "c", "d"}
+	for i, want := range wantIDs {
+		if gotIDs[i] != want {
+			t.Errorf("after move-down on a: position %d = %q, want %q (full order %v)", i, gotIDs[i], want, gotIDs)
+		}
+	}
+
+	// Disk should reflect the same order under SortKey sort.
+	loaded, err := h.storage.LoadSessions()
+	if err != nil {
+		t.Fatalf("LoadSessions: %v", err)
+	}
+	var loadedIDs []string
+	for _, r := range loaded {
+		if r.ProjectPath == "/tmp/repo" {
+			loadedIDs = append(loadedIDs, r.ID)
+		}
+	}
+	for i, want := range wantIDs {
+		if loadedIDs[i] != want {
+			t.Errorf("disk position %d = %q, want %q (full order %v)", i, loadedIDs[i], want, loadedIDs)
+		}
+	}
+
+	// Cursor follows a.
+	newIdx := findFlatSessionIdx(h, "a")
+	if h.cursor != newIdx {
+		t.Errorf("cursor did not follow a: cursor=%d, a at %d", h.cursor, newIdx)
+	}
+}
+
 func TestMoveCursorItemRepoReorder(t *testing.T) {
 	h := newTestHome(t)
 	now := time.Now().Truncate(time.Second)
