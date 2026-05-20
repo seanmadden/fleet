@@ -212,9 +212,9 @@ func TestSanitizeBranchName(t *testing.T) {
 
 // TestDeriveWorktreePath_FromWorktree exercises the bug fix where calling
 // deriveWorktreePath from inside a linked worktree used to produce a sibling
-// of the *worktree* (e.g. `<repo>-wt-claude/abcd`) instead of a sibling of the
-// *main* repo. The new behaviour resolves through `git rev-parse
-// --git-common-dir` so the result is anchored at the main repo regardless of
+// of the *worktree* instead of being anchored at the *main* repo. The current
+// behaviour resolves through `git rev-parse --git-common-dir` so the result is
+// always rooted at the main repo's `.claude/worktrees/<name>` regardless of
 // which worktree fleet happened to be invoked in.
 func TestDeriveWorktreePath_FromWorktree(t *testing.T) {
 	root := t.TempDir()
@@ -234,7 +234,7 @@ func TestDeriveWorktreePath_FromWorktree(t *testing.T) {
 	runCmd(main, "config", "user.name", "test")
 	runCmd(main, "commit", "--allow-empty", "-q", "-m", "init")
 
-	wt := filepath.Join(root, "myrepo-claude-abc12345")
+	wt := filepath.Join(main, ".claude", "worktrees", "claude-abc12345")
 	runCmd(main, "worktree", "add", "-b", "claude/abc12345", wt)
 
 	got := deriveWorktreePath(wt, "feature-x")
@@ -242,9 +242,9 @@ func TestDeriveWorktreePath_FromWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
-	want := filepath.Join(resolvedRoot, "myrepo-feature-x")
+	want := filepath.Join(resolvedRoot, "myrepo", ".claude", "worktrees", "feature-x")
 	if got != want {
-		t.Errorf("deriveWorktreePath(worktree) = %q, want %q (sibling of main, not of worktree)", got, want)
+		t.Errorf("deriveWorktreePath(worktree) = %q, want %q (anchored at main repo's .claude/worktrees, not at the worktree)", got, want)
 	}
 }
 
@@ -253,22 +253,92 @@ func TestDeriveWorktreePath(t *testing.T) {
 		name     string
 		repoPath string
 		wtName   string
-		wantEnd  string // suffix the result should end with
+		wantTail string // trailing path the result should end with (after the repo root)
 	}{
-		{"basic", "/code/myrepo", "feature-login", "myrepo-feature-login"},
-		{"nested repo", "/home/user/projects/app", "hotfix", "app-hotfix"},
+		{"basic", "/code/myrepo", "feature-login", "myrepo/.claude/worktrees/feature-login"},
+		{"nested repo", "/home/user/projects/app", "hotfix", "app/.claude/worktrees/hotfix"},
+		{"claude session shape", "/code/myrepo", "claude-abc12345", "myrepo/.claude/worktrees/claude-abc12345"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := deriveWorktreePath(tt.repoPath, tt.wtName)
-			if filepath.Base(got) != tt.wantEnd {
-				t.Errorf("deriveWorktreePath(%q, %q) base = %q, want %q", tt.repoPath, tt.wtName, filepath.Base(got), tt.wantEnd)
+			if !strings.HasSuffix(got, tt.wantTail) {
+				t.Errorf("deriveWorktreePath(%q, %q) = %q, want suffix %q", tt.repoPath, tt.wtName, got, tt.wantTail)
 			}
-			// Should be a sibling directory (same parent).
-			if filepath.Dir(got) != filepath.Dir(tt.repoPath) {
-				t.Errorf("deriveWorktreePath result parent = %q, want %q", filepath.Dir(got), filepath.Dir(tt.repoPath))
+			// Worktree must live inside the repo, not as a sibling of it.
+			if filepath.Dir(filepath.Dir(filepath.Dir(got))) != tt.repoPath {
+				t.Errorf("deriveWorktreePath result %q is not under %q/.claude/worktrees/", got, tt.repoPath)
 			}
 		})
+	}
+}
+
+func TestDeriveWorktreePathPreview(t *testing.T) {
+	got := DeriveWorktreePathPreview("/code/myrepo", "claude-abc12345")
+	want := ".claude/worktrees/claude-abc12345"
+	if got != want {
+		t.Errorf("DeriveWorktreePathPreview = %q, want %q", got, want)
+	}
+}
+
+// TestEnsureWorktreeExcluded covers the .git/info/exclude maintenance that
+// keeps `.claude/worktrees/` invisible to `git status` on the main checkout.
+// Idempotent: running twice should add the entry exactly once.
+func TestEnsureWorktreeExcluded(t *testing.T) {
+	root := t.TempDir()
+	main := filepath.Join(root, "myrepo")
+	if err := os.MkdirAll(main, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	runCmd := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, out)
+		}
+	}
+	runCmd(main, "init", "--initial-branch=main", "-q")
+
+	excludePath := filepath.Join(main, ".git", "info", "exclude")
+	entry := "/" + WorktreesSubdir + "/"
+
+	// First call: should add the entry.
+	if err := ensureWorktreeExcluded(main); err != nil {
+		t.Fatalf("ensureWorktreeExcluded (first call): %v", err)
+	}
+	contents, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude after first call: %v", err)
+	}
+	if !strings.Contains(string(contents), entry+"\n") {
+		t.Fatalf("exclude missing %q after first call:\n%s", entry, contents)
+	}
+
+	// Second call: should be a no-op (exact-line match).
+	if err := ensureWorktreeExcluded(main); err != nil {
+		t.Fatalf("ensureWorktreeExcluded (second call): %v", err)
+	}
+	contents2, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude after second call: %v", err)
+	}
+	if string(contents2) != string(contents) {
+		t.Errorf("exclude changed on second call (not idempotent):\nbefore:\n%s\nafter:\n%s", contents, contents2)
+	}
+
+	// Count occurrences to make sure idempotence holds line-exactly.
+	if got := strings.Count(string(contents2), entry); got != 1 {
+		t.Errorf("entry appears %d times, want exactly 1", got)
+	}
+}
+
+// TestLegacyDeriveWorktreePath verifies the legacy sibling path is still
+// computable for Destroy's back-compat fallback.
+func TestLegacyDeriveWorktreePath(t *testing.T) {
+	got := legacyDeriveWorktreePath("/code/myrepo", "claude-abc12345")
+	want := "/code/myrepo-claude-abc12345"
+	if got != want {
+		t.Errorf("legacyDeriveWorktreePath = %q, want %q", got, want)
 	}
 }

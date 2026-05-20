@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -96,6 +97,16 @@ func (g *GitWorktreeProvider) Create(repoPath, name, branch, baseBranch string) 
 	}
 
 	debuglog.Logger.Info("git worktree created", "name", name, "branch", branch, "path", path)
+
+	// Make sure the main repo's `git status` doesn't report the in-repo worktree
+	// as untracked. Per-repo, untracked-by-the-repo — uses .git/info/exclude
+	// rather than .gitignore so we don't commit a fleet-ism into the user's repo.
+	if err := ensureWorktreeExcluded(repoPath); err != nil {
+		// Non-fatal: the worktree itself is fine, the user just sees
+		// `.claude/worktrees/` in `git status`. Log and continue.
+		debuglog.Logger.Warn("ensureWorktreeExcluded failed", "repo", repoPath, "err", err)
+	}
+
 	return &WorkspaceInfo{
 		Name:   name,
 		Path:   path,
@@ -132,18 +143,22 @@ func (g *GitWorktreeProvider) Destroy(repoPath, name string) error {
 	mainPath, _ := filepath.Abs(all[0].Path)
 	absRepo, _ := filepath.Abs(repoPath)
 	derivedPath, _ := filepath.Abs(deriveWorktreePath(mainPath, name))
+	legacyPath, _ := filepath.Abs(legacyDeriveWorktreePath(mainPath, name))
 
 	// Find the worktree to remove. Try multiple matching strategies:
 	// 1. Exact name match (ws.Name == name)
-	// 2. Derived path match (worktree created by fleet: mainRepo-name)
-	// 3. repoPath itself is the worktree (caller resolved GetRepoRoot to worktree path)
+	// 2. Current derived path (`<mainRepo>/.claude/worktrees/<name>`)
+	// 3. Legacy sibling-style derived path (`<parent>/<mainRepoBase>-<name>`),
+	//    so worktrees created by pre-`.claude/worktrees/` fleet builds still
+	//    destroy cleanly by name
+	// 4. repoPath itself is the worktree (caller resolved GetRepoRoot to worktree path)
 	var wtPath string
 	for _, ws := range all {
 		absWS, _ := filepath.Abs(ws.Path)
 		if absWS == mainPath {
 			continue // never remove the main worktree
 		}
-		if ws.Name == name || absWS == derivedPath || absWS == absRepo {
+		if ws.Name == name || absWS == derivedPath || absWS == legacyPath || absWS == absRepo {
 			wtPath = ws.Path
 			break
 		}
@@ -417,15 +432,33 @@ func ValidateBranchName(branch string) string {
 	return ""
 }
 
-// deriveWorktreePath computes the sibling worktree path next to the **main**
-// repo. If repoPath is itself a linked worktree (e.g. fleet is invoked on a
-// previously-created `claude/<hex>` workspace), `git rev-parse --git-common-dir`
-// resolves to the main repo's `.git`, whose parent is the main repo — so the
-// new worktree always lands beside the main checkout regardless of which
-// worktree the user happened to be in.
-// e.g. repoPath="/code/myrepo", name="feature-login" -> "/code/myrepo-feature-login"
-// e.g. repoPath="/code/myrepo-claude-abc12345", name="feature-x" -> "/code/myrepo-feature-x"
+// WorktreesSubdir is the in-repo directory under which fleet creates per-session
+// worktrees. Matches Claude Code's own Agent-isolation convention so the two
+// tools play nicely side-by-side and so the directory reads as obviously
+// claude-related to humans browsing the repo.
+const WorktreesSubdir = ".claude/worktrees"
+
+// deriveWorktreePath computes the worktree path under the **main** repo's
+// `.claude/worktrees/` directory. If repoPath is itself a linked worktree
+// (e.g. fleet is invoked on a previously-created `claude/<hex>` workspace),
+// `git rev-parse --git-common-dir` resolves to the main repo's `.git`, whose
+// parent is the main repo — so the new worktree always lands inside the main
+// checkout regardless of which worktree the user happened to be in.
+// e.g. repoPath="/code/myrepo", name="claude-abc12345" -> "/code/myrepo/.claude/worktrees/claude-abc12345"
+// e.g. repoPath="/code/myrepo/.claude/worktrees/claude-abc12345", name="feature-x" -> "/code/myrepo/.claude/worktrees/feature-x"
 func deriveWorktreePath(repoPath, name string) string {
+	absRepo, _ := filepath.Abs(repoPath)
+	main := absRepo
+	if commonDir := gitCommonDir(absRepo); commonDir != "" {
+		main = filepath.Dir(commonDir)
+	}
+	return filepath.Join(main, WorktreesSubdir, name)
+}
+
+// legacyDeriveWorktreePath returns the pre-`.claude/worktrees/` sibling layout
+// (`<parent>/<mainRepoBase>-<name>`). Kept solely so Destroy can still locate
+// worktrees created by older fleet builds and remove them by name.
+func legacyDeriveWorktreePath(repoPath, name string) string {
 	absRepo, _ := filepath.Abs(repoPath)
 	main := absRepo
 	if commonDir := gitCommonDir(absRepo); commonDir != "" {
@@ -434,6 +467,58 @@ func deriveWorktreePath(repoPath, name string) string {
 	parent := filepath.Dir(main)
 	base := filepath.Base(main)
 	return filepath.Join(parent, base+"-"+name)
+}
+
+// ensureWorktreeExcluded appends `.claude/worktrees/` to the **main** repo's
+// `.git/info/exclude` file if it isn't already listed there. This stops the
+// in-repo worktree directories from showing up as untracked content in
+// `git status` on the main checkout. The file is per-repo, untracked, and
+// invisible to teammates — exactly the right place for a tool-managed rule.
+//
+// Idempotent: re-running is a no-op when the entry is already present.
+// Non-fatal: any I/O error is returned to the caller, which logs and
+// continues — the worktree itself is still functional.
+func ensureWorktreeExcluded(repoPath string) error {
+	commonDir := gitCommonDir(repoPath)
+	if commonDir == "" {
+		return fmt.Errorf("resolve git common dir for %q", repoPath)
+	}
+	excludePath := filepath.Join(commonDir, "info", "exclude")
+
+	const entry = "/" + WorktreesSubdir + "/"
+	existing, err := os.ReadFile(excludePath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", excludePath, err)
+	}
+
+	// Match on whole line so we don't double-add and don't false-positive on a
+	// longer line that happens to contain the substring.
+	for _, line := range strings.Split(string(existing), "\n") {
+		if strings.TrimSpace(line) == entry {
+			return nil
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(excludePath), err)
+	}
+
+	// Prefix a newline if the existing file doesn't end with one, so we don't
+	// concatenate onto an unterminated final line.
+	var prefix string
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		prefix = "\n"
+	}
+	appended := prefix + entry + "\n"
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", excludePath, err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(appended); err != nil {
+		return fmt.Errorf("write %s: %w", excludePath, err)
+	}
+	return nil
 }
 
 // gitCommonDir is a local helper for deriveWorktreePath. We can't import
@@ -450,14 +535,8 @@ func gitCommonDir(repoPath string) string {
 }
 
 // DeriveWorktreePathPreview returns a display-friendly relative path preview.
-// Mirrors deriveWorktreePath: if repoPath is a linked worktree the preview
-// shows the main repo's base name, not the worktree's.
+// Mirrors deriveWorktreePath: the worktree lives inside the main repo under
+// `.claude/worktrees/`, so the preview is rooted at the repo, not its parent.
 func DeriveWorktreePathPreview(repoPath, name string) string {
-	absRepo, _ := filepath.Abs(repoPath)
-	main := absRepo
-	if commonDir := gitCommonDir(absRepo); commonDir != "" {
-		main = filepath.Dir(commonDir)
-	}
-	base := filepath.Base(main)
-	return "../" + base + "-" + name
+	return WorktreesSubdir + "/" + name
 }
