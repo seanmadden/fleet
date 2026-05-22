@@ -10,15 +10,48 @@ import (
 
 // Config holds user-configurable settings.
 type Config struct {
-	TickIntervalSec    int    `json:"tick_interval_sec,omitempty"`
-	DefaultProjectPath string `json:"default_project_path,omitempty"`
-	Editor             string `json:"editor,omitempty"`
-	Theme              string `json:"theme,omitempty"`
-	AutoNameSessions   *bool  `json:"auto_name_sessions,omitempty"`
-	CopyClaudeSettings *bool  `json:"copy_claude_settings,omitempty"`
-	EnterMode          string `json:"enter_mode,omitempty"` // "attach" or "split"
-	FocusOnNewSession  *bool  `json:"focus_on_new_session,omitempty"`
-	Telemetry          *bool  `json:"telemetry,omitempty"`
+	TickIntervalSec    int        `json:"tick_interval_sec,omitempty"`
+	DefaultProjectPath string     `json:"default_project_path,omitempty"`
+	Editor             string     `json:"editor,omitempty"`
+	Theme              string     `json:"theme,omitempty"`
+	AutoNameSessions   *bool      `json:"auto_name_sessions,omitempty"`
+	CopyClaudeSettings *bool      `json:"copy_claude_settings,omitempty"`
+	EnterMode          string     `json:"enter_mode,omitempty"` // "attach" or "split"
+	FocusOnNewSession  *bool      `json:"focus_on_new_session,omitempty"`
+	Telemetry          *bool      `json:"telemetry,omitempty"`
+	Web                *WebConfig `json:"web,omitempty"`
+}
+
+// WebConfig configures the embedded mobile-friendly web UI server.
+//
+// Disabled by default — set Enabled=true to opt in. Addr defaults to
+// "0.0.0.0:8765" (Tailscale-reachable; token is the protection). Token may
+// be left empty on first run; the server generates a random 32-byte hex token
+// and writes it back to the config file, logging once at INFO. When listening
+// on a non-loopback address an empty token causes the server to refuse to
+// start — the bearer token is the only auth.
+type WebConfig struct {
+	Enabled *bool  `json:"enabled,omitempty"`
+	Addr    string `json:"addr,omitempty"`
+	Token   string `json:"token,omitempty"`
+}
+
+// IsEnabled reports whether the embedded web UI server should start.
+// Nil-safe: returns false if the receiver or the Enabled pointer is nil.
+func (w *WebConfig) IsEnabled() bool {
+	if w == nil || w.Enabled == nil {
+		return false
+	}
+	return *w.Enabled
+}
+
+// GetAddr returns the configured listen address, defaulting to "0.0.0.0:8765"
+// when unset. Nil-safe.
+func (w *WebConfig) GetAddr() string {
+	if w == nil || w.Addr == "" {
+		return "0.0.0.0:8765"
+	}
+	return w.Addr
 }
 
 // IsAutoNameEnabled returns whether auto-naming is enabled (default: true).

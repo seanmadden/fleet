@@ -211,6 +211,13 @@ type Home struct {
 
 	// Rendering diagnostics (accumulated counters for bug reports).
 	renderStats RenderStats
+
+	// Web integration. program is the running tea.Program (so the web
+	// MutationDispatcher can call Send); webPublisher is the SSE event
+	// sink. Both nil unless cmd/fleet/main.go wires them up — fleet
+	// runs identically when web.enabled is false.
+	program      *tea.Program
+	webPublisher webSessionPublisher
 }
 
 // NewHome creates the main TUI model.
@@ -401,6 +408,7 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		h.rebuildFlatItems()
+		h.publishSessionEvent("updated", msg.id)
 
 	case commandPaletteMsg:
 		h.actionLog.Add("command: "+msg.commandID, "", true)
@@ -466,6 +474,15 @@ func (h *Home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quickApproveMsg:
 		if msg.err != nil {
 			h.setError(fmt.Errorf("approve: %w", msg.err))
+		}
+		return h, nil
+
+	case webMutationMsg:
+		return h.handleWebMutation(msg)
+
+	case webSendKeysResultMsg:
+		if msg.err != nil {
+			h.setError(fmt.Errorf("web sendkeys: %w", msg.err))
 		}
 		return h, nil
 
@@ -1543,6 +1560,9 @@ func (h *Home) handleSessionCreateResult(msg sessionCreateResultMsg) (tea.Model,
 		h.setError(fmt.Errorf("failed to save session: %w", err))
 	}
 
+	// Notify web subscribers (no-op if web disabled).
+	h.publishSessionEvent("created", s.ID)
+
 	// Auto-select the new session.
 	for i, item := range h.flatItems {
 		if !item.IsRepoHeader && item.Session != nil && item.Session.ID == s.ID {
@@ -2246,6 +2266,11 @@ func (h *Home) deferDelete(msg sessionDeleteMsg) (tea.Model, tea.Cmd) {
 		DeletedAt:     time.Now(),
 	})
 
+	// Notify web subscribers — the row is gone from the in-memory list as
+	// of a few lines above, so this delivers the right view to clients
+	// even though the tmux/workspace cleanup is still deferred.
+	h.publishSessionEvent("deleted", msg.id)
+
 	// Show undo flash.
 	h.setInfo(h.buildUndoFlashMessage())
 
@@ -2470,6 +2495,12 @@ func (h *Home) handleTick() (tea.Model, tea.Cmd) {
 	h.workerMu.Lock()
 	h.rebuildFlatItems()
 	h.workerMu.Unlock()
+
+	// Cheap, coarse-grained SSE nudge so web clients refetch the list every
+	// tick. The session list rarely changes — but statuses do — and a
+	// blanket "refresh" is simpler than diffing per-session here, with
+	// minimal cost because SSE drops events for slow subscribers anyway.
+	h.publishSessionEvent("refresh", "")
 
 	// Preview is now handled by the faster previewTick, no need to fetch here.
 	return h, h.tick()
