@@ -13,6 +13,8 @@ func TestSessionSnapshot_JSONRoundTrip(t *testing.T) {
 		ID:              "abc",
 		Title:           "test",
 		ProjectPath:     "/repo",
+		MainRepoPath:    "/repo",
+		RepoName:        "repo",
 		Status:          "running",
 		WorkspaceName:   "feature/x",
 		CreatedAt:       created,
