@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/brizzai/fleet/internal/debuglog"
 	"github.com/brizzai/fleet/internal/session"
@@ -120,10 +121,13 @@ func (h *Home) PaneSnapshot(id string) (string, error) {
 // under s.mu.Lock and were previously read raw here).
 func sessionToSnapshot(s *session.Session) web.SessionSnapshot {
 	snap := s.SnapshotForWeb()
+	mainRepo := session.GetMainRepo(snap.ProjectPath)
 	return web.SessionSnapshot{
 		ID:              snap.ID,
 		Title:           snap.Title,
 		ProjectPath:     snap.ProjectPath,
+		MainRepoPath:    mainRepo,
+		RepoName:        filepath.Base(mainRepo),
 		Status:          string(snap.Status),
 		WorkspaceName:   snap.WorkspaceName,
 		CreatedAt:       snap.CreatedAt,

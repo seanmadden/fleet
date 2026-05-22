@@ -91,6 +91,35 @@ main { flex: 1; padding-bottom: env(safe-area-inset-bottom, 0); }
   cursor: pointer;
 }
 .session-list li:active { background: var(--bg-elev); }
+.session-list li.repo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  min-height: 0;
+  background: var(--bg-elev);
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: default;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: calc(48px + env(safe-area-inset-top, 0));
+  z-index: 1;
+}
+.session-list li.repo-header:active { background: var(--bg-elev); }
+.repo-header-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-header-count {
+  color: var(--fg-muted);
+  font-weight: 500;
+}
 .session-meta { flex: 1; min-width: 0; }
 .session-title {
   font-weight: 500;

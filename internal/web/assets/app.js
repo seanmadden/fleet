@@ -90,6 +90,24 @@
   }
 
   // --- Rendering ---
+  // Sessions are grouped by mainRepoPath, mirroring the TUI sidebar.
+  // Worktree-backed sessions resolve to their main repo on the server
+  // side (GetMainRepo) so they sit under the same header as their
+  // siblings rather than appearing as separate groups.
+  function groupSessions(list) {
+    const groups = new Map();
+    list.forEach((s) => {
+      const key = s.mainRepoPath || s.projectPath || '';
+      if (!groups.has(key)) {
+        groups.set(key, { key, name: s.repoName || key, sessions: [] });
+      }
+      groups.get(key).sessions.push(s);
+    });
+    // Stable repo-name sort so the list doesn't jitter as sessions update.
+    return Array.from(groups.values()).sort((a, b) =>
+      a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
+  }
+
   function renderList() {
     if (!sessions.length) {
       // Build via DOM API rather than innerHTML — the string is static
@@ -102,26 +120,44 @@
       return;
     }
     const frag = document.createDocumentFragment();
-    sessions.forEach((s) => {
-      const li = document.createElement('li');
-      li.dataset.id = s.id;
-      const meta = document.createElement('div');
-      meta.className = 'session-meta';
-      const t = document.createElement('div');
-      t.className = 'session-title';
-      t.textContent = s.title || '(untitled)';
-      const sub = document.createElement('div');
-      sub.className = 'session-sub';
-      sub.textContent = s.workspaceName ? `${s.workspaceName} · ${s.projectPath}` : s.projectPath;
-      meta.appendChild(t);
-      meta.appendChild(sub);
-      const status = document.createElement('div');
-      status.className = 'session-status status-' + (s.status || 'idle');
-      status.textContent = s.status || 'idle';
-      li.appendChild(meta);
-      li.appendChild(status);
-      li.addEventListener('click', () => openDetail(s.id));
-      frag.appendChild(li);
+    groupSessions(sessions).forEach((group) => {
+      const header = document.createElement('li');
+      header.className = 'repo-header';
+      // role=presentation so screen readers don't announce the header
+      // as an interactive list item — only the session rows below are
+      // tappable.
+      header.setAttribute('role', 'presentation');
+      const name = document.createElement('span');
+      name.className = 'repo-header-name';
+      name.textContent = group.name;
+      const count = document.createElement('span');
+      count.className = 'repo-header-count';
+      count.textContent = String(group.sessions.length);
+      header.appendChild(name);
+      header.appendChild(count);
+      frag.appendChild(header);
+
+      group.sessions.forEach((s) => {
+        const li = document.createElement('li');
+        li.dataset.id = s.id;
+        const meta = document.createElement('div');
+        meta.className = 'session-meta';
+        const t = document.createElement('div');
+        t.className = 'session-title';
+        t.textContent = s.title || '(untitled)';
+        const sub = document.createElement('div');
+        sub.className = 'session-sub';
+        sub.textContent = s.workspaceName ? `${s.workspaceName} · ${s.projectPath}` : s.projectPath;
+        meta.appendChild(t);
+        meta.appendChild(sub);
+        const status = document.createElement('div');
+        status.className = 'session-status status-' + (s.status || 'idle');
+        status.textContent = s.status || 'idle';
+        li.appendChild(meta);
+        li.appendChild(status);
+        li.addEventListener('click', () => openDetail(s.id));
+        frag.appendChild(li);
+      });
     });
     listEl.replaceChildren(frag);
   }

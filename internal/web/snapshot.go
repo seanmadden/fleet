@@ -14,6 +14,8 @@ type SessionSnapshot struct {
 	ID              string    `json:"id"`
 	Title           string    `json:"title"`
 	ProjectPath     string    `json:"projectPath"`
+	MainRepoPath    string    `json:"mainRepoPath,omitempty"`
+	RepoName        string    `json:"repoName,omitempty"`
 	Status          string    `json:"status"`
 	WorkspaceName   string    `json:"workspaceName,omitempty"`
 	CreatedAt       time.Time `json:"createdAt"`
