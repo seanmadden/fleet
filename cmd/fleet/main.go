@@ -1,19 +1,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/brizzai/fleet/internal/config"
 	"github.com/brizzai/fleet/internal/debuglog"
 	"github.com/brizzai/fleet/internal/migration"
+	"github.com/brizzai/fleet/internal/pathx"
 	"github.com/brizzai/fleet/internal/perfwatch"
 	"github.com/brizzai/fleet/internal/session"
 	"github.com/brizzai/fleet/internal/tmux"
 	"github.com/brizzai/fleet/internal/ui"
+	"github.com/brizzai/fleet/internal/web"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -75,6 +78,15 @@ func main() {
 }
 
 func runTUI() {
+	// Indirection so deferred cleanup (storage.Close, web server Shutdown)
+	// still runs on the error path. Calling os.Exit directly in runTUI bypasses
+	// defers; runTUIInner returns an exit code instead.
+	if code := runTUIInner(); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func runTUIInner() int {
 	// Run filesystem/tmux/hook migration before debuglog.Init creates ~/.config/fleet/.
 	// migration.Run is a no-op after the first successful invocation.
 	migration.Run()
@@ -86,7 +98,7 @@ func runTUI() {
 
 	if err := tmux.IsTmuxAvailable(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 
 	cfg := config.Load()
@@ -94,7 +106,7 @@ func runTUI() {
 	storage, err := session.Open(session.DefaultDBPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open database: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer storage.Close()
 
@@ -104,11 +116,89 @@ func runTUI() {
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
 	)
+	model.SetProgram(p)
+
+	// Optional embedded web server. Returns nil when disabled.
+	webSrv := startWebServer(cfg, model)
+	if webSrv != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := webSrv.Shutdown(ctx); err != nil {
+				debuglog.Logger.Warn("web: shutdown", "err", err)
+			}
+		}()
+	}
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+// startWebServer constructs and launches the embedded web server when
+// cfg.Web.Enabled is true. Returns nil when disabled or on construction
+// error (errors are logged + surfaced via stderr but don't take the TUI
+// down — the user can still use fleet without the web UI).
+//
+// Token bootstrapping: when web.token is empty AND web is enabled, generate
+// a 32-byte hex token, persist it back to ~/.config/fleet/config.json, and
+// log its length (never the value) once at INFO. The bearer token is the
+// only auth — web.NewServer refuses to start with an empty token, even on
+// loopback, so the auto-mint here is required for every fresh install.
+func startWebServer(cfg *config.Config, model *ui.Home) *web.Server {
+	if cfg.Web == nil || !cfg.Web.IsEnabled() {
+		return nil
+	}
+	addr := cfg.Web.GetAddr()
+	token := cfg.Web.Token
+
+	// Auto-mint a token if empty — even on loopback so the user has one
+	// they can paste into mobile Safari.
+	if token == "" {
+		t, err := web.GenerateToken()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "web: token generation failed: %v\n", err)
+			debuglog.Logger.Error("web: token generation failed", "err", err)
+			return nil
+		}
+		token = t
+		cfg.Web.Token = token
+		if err := cfg.Save(); err != nil {
+			debuglog.Logger.Error("web: failed to persist generated token", "err", err)
+			// Continue — user can copy from the log line below.
+		}
+		// Never log the token itself — debug.log is included in bug reports
+		// (the `!` diagnostics dialog) and surfaced to anyone who reads
+		// ~/.config/fleet/debug.log. Length is enough to confirm generation
+		// worked. The full token goes to stderr ONCE during the bootstrapping
+		// startup so the user can paste it into mobile Safari.
+		debuglog.Logger.Info("web: generated bearer token (saved to config)", "token_len", len(token))
+		fmt.Fprintf(os.Stderr, "fleet web UI: generated bearer token (saved to ~/.config/fleet/config.json):\n  %s\n", token)
+	}
+
+	srv, err := web.NewServer(web.Deps{
+		Source:     model,
+		Dispatcher: model,
+		Addr:       addr,
+		Token:      token,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "web: %v\n", err)
+		debuglog.Logger.Error("web: server construction failed", "err", err)
+		return nil
+	}
+
+	model.SetWebPublisher(srv)
+	fmt.Fprintf(os.Stderr, "fleet web UI listening on %s\n", addr)
+
+	go func() {
+		if err := srv.Start(); err != nil {
+			debuglog.Logger.Error("web: server stopped with error", "err", err)
+		}
+	}()
+	return srv
 }
 
 func runAdd(path string) {
@@ -118,7 +208,7 @@ func runAdd(path string) {
 	}
 
 	// Expand and validate path.
-	path = expandPath(path)
+	path = pathx.Expand(path)
 	info, err := os.Stat(path)
 	if err != nil || !info.IsDir() {
 		fmt.Fprintf(os.Stderr, "Invalid directory: %s\n", path)
@@ -236,16 +326,4 @@ Usage:
   fleet hooks <install|uninstall|status>  Manage Claude Code hooks
   fleet version      Show version
   fleet help         Show this help`)
-}
-
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, path[2:])
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return path
-	}
-	return abs
 }

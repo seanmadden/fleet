@@ -211,6 +211,50 @@ func TestConfigUnmarshalInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestWebConfig_IsEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		w    *WebConfig
+		want bool
+	}{
+		{"nil receiver", nil, false},
+		{"nil Enabled pointer", &WebConfig{}, false},
+		{"Enabled=false", &WebConfig{Enabled: boolPtr(false)}, false},
+		{"Enabled=true", &WebConfig{Enabled: boolPtr(true)}, true},
+		{"Enabled=true with other fields", &WebConfig{Enabled: boolPtr(true), Addr: "127.0.0.1:9000", Token: "t"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.w.IsEnabled(); got != tt.want {
+				t.Errorf("IsEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWebConfig_GetAddr(t *testing.T) {
+	tests := []struct {
+		name string
+		w    *WebConfig
+		want string
+	}{
+		{"nil receiver defaults", nil, "0.0.0.0:8765"},
+		{"empty Addr defaults", &WebConfig{}, "0.0.0.0:8765"},
+		{"explicit Addr loopback", &WebConfig{Addr: "127.0.0.1:9000"}, "127.0.0.1:9000"},
+		{"explicit Addr any", &WebConfig{Addr: "0.0.0.0:9999"}, "0.0.0.0:9999"},
+		{"Addr override doesn't depend on Enabled", &WebConfig{Enabled: boolPtr(false), Addr: "example.com:1"}, "example.com:1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.w.GetAddr(); got != tt.want {
+				t.Errorf("GetAddr() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
 func TestConfigOmitEmptyFields(t *testing.T) {
 	// Empty config should produce minimal JSON (omitempty).
 	cfg := &Config{}
