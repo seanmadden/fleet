@@ -27,9 +27,12 @@ type Config struct {
 // Disabled by default — set Enabled=true to opt in. Addr defaults to
 // "0.0.0.0:8765" (Tailscale-reachable; token is the protection). Token may
 // be left empty on first run; the server generates a random 32-byte hex token
-// and writes it back to the config file, logging once at INFO. When listening
-// on a non-loopback address an empty token causes the server to refuse to
-// start — the bearer token is the only auth.
+// and writes it back to the config file, logging the length (never the
+// value) once at INFO. The bearer token is the only auth — an empty token
+// always causes the server to refuse to start, regardless of bind address.
+// (Earlier drafts exempted loopback; the dedicated auth middleware made that
+// path dead code, so the exemption was removed to keep the configuration
+// honest.)
 type WebConfig struct {
 	Enabled *bool  `json:"enabled,omitempty"`
 	Addr    string `json:"addr,omitempty"`

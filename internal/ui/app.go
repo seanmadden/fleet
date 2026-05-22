@@ -218,6 +218,13 @@ type Home struct {
 	// runs identically when web.enabled is false.
 	program      *tea.Program
 	webPublisher webSessionPublisher
+
+	// lastWebRefreshHash deduplicates the per-tick SSE "refresh" nudge —
+	// without this every connected client refetched /api/sessions every
+	// ~2s regardless of whether anything actually changed. The hash
+	// covers the flat sidebar list (id, title, status, isAlive) so
+	// status flips, creates, deletes, and renames all trigger a refresh.
+	lastWebRefreshHash uint64
 }
 
 // NewHome creates the main TUI model.
@@ -2494,16 +2501,55 @@ func (h *Home) handleTick() (tea.Model, tea.Cmd) {
 	// Read worker results under lock and rebuild.
 	h.workerMu.Lock()
 	h.rebuildFlatItems()
+	hash := h.computeSidebarHashLocked()
 	h.workerMu.Unlock()
 
-	// Cheap, coarse-grained SSE nudge so web clients refetch the list every
-	// tick. The session list rarely changes — but statuses do — and a
-	// blanket "refresh" is simpler than diffing per-session here, with
-	// minimal cost because SSE drops events for slow subscribers anyway.
-	h.publishSessionEvent("refresh", "")
+	// SSE refresh nudge — only when the visible session set actually
+	// changed since the last tick. Without this dedupe every connected
+	// web client refetched /api/sessions every ~2s for the lifetime of
+	// the SSE connection, even when nothing changed. Hash covers id /
+	// title / status / isAlive so creates, deletes, renames, and status
+	// flips all trigger a refresh.
+	if hash != h.lastWebRefreshHash {
+		h.lastWebRefreshHash = hash
+		h.publishSessionEvent("refresh", "")
+	}
 
 	// Preview is now handled by the faster previewTick, no need to fetch here.
 	return h, h.tick()
+}
+
+// computeSidebarHashLocked summarises the web-visible portion of the
+// session list into a single uint64 so handleTick can skip the SSE
+// refresh nudge when nothing changed. Must be called with workerMu held.
+//
+// The hash is deliberately coarse — id+title+status+count is enough to
+// catch creates, deletes, renames, and status flips. IsAlive is
+// deliberately NOT included because reading it shells out to tmux and
+// we'd be paying that cost across every session every tick; status
+// already flips to Error when a session dies, which covers the
+// alive-state change the client cares about. Pane content changes don't
+// appear here either; the client polls /api/sessions/{id}/pane on its
+// own cadence when a detail view is open.
+func (h *Home) computeSidebarHashLocked() uint64 {
+	// FNV-1a 64-bit, inlined to avoid pulling hash/fnv into the hot path.
+	const offset64 = 14695981039346656037
+	const prime64 = 1099511628211
+	hash := uint64(offset64)
+	write := func(s string) {
+		for i := 0; i < len(s); i++ {
+			hash ^= uint64(s[i])
+			hash *= prime64
+		}
+		hash ^= '\x00'
+		hash *= prime64
+	}
+	for _, s := range h.sessions {
+		write(s.ID)
+		write(s.Title)
+		write(string(s.GetStatus()))
+	}
+	return hash
 }
 
 // statusWorker runs in its own goroutine, performing all blocking I/O

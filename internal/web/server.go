@@ -74,14 +74,13 @@ type Deps struct {
 	Source     SessionSource
 	Dispatcher MutationDispatcher
 
-	// Addr is the listen address (e.g. "0.0.0.0:8765"). Loopback ("127.0.0.1",
-	// "::1", "localhost") lets Token be empty for local-only access; any
-	// other host requires a non-empty Token.
+	// Addr is the listen address (e.g. "0.0.0.0:8765"). Required.
 	Addr string
 
-	// Token is the bearer token required on /api/* requests. If empty and
-	// Addr is loopback, auth is disabled. If empty and Addr is non-loopback,
-	// NewServer returns an error.
+	// Token is the bearer token required on /api/* requests. Required —
+	// NewServer rejects an empty token. cmd/fleet/main.go auto-generates
+	// one on first run and persists it to ~/.config/fleet/config.json so
+	// the operator only needs to copy it once.
 	Token string
 
 	// MutationTimeout bounds how long a handler waits for the TUI to ack a
@@ -112,14 +111,15 @@ type Server struct {
 // Returns an error when:
 //   - deps.Source or deps.Dispatcher is nil
 //   - deps.Addr is empty
-//   - deps.Addr is non-loopback and deps.Token is empty (no auth would be applied)
+//   - deps.Token is empty (the bearer token is the only auth — there is no
+//     loopback exemption, even though the default addr is 0.0.0.0:8765,
+//     because anyone with access to the loopback interface on a shared
+//     machine could otherwise read other users' sessions)
 //
-// When deps.Token is empty AND deps.Addr is loopback, auth is disabled and
-// the empty token is preserved.
-//
-// When deps.Token is empty AND deps.Addr is non-loopback this returns an
-// error — the caller (cmd/fleet/main.go) is responsible for auto-generating
-// a token before construction if it wants the auto-generation behaviour.
+// The bearerAuth middleware is independently strict — it rejects every
+// request when the resolved token is empty — so the loopback-exemption
+// branch in earlier drafts was dead code regardless. Failing fast here
+// keeps the documentation honest.
 func NewServer(deps Deps) (*Server, error) {
 	if deps.Source == nil {
 		return nil, errors.New("web: Deps.Source is required")
@@ -130,8 +130,8 @@ func NewServer(deps Deps) (*Server, error) {
 	if deps.Addr == "" {
 		return nil, errors.New("web: Deps.Addr is required")
 	}
-	if deps.Token == "" && !isLoopbackAddr(deps.Addr) {
-		return nil, fmt.Errorf("web: refusing to start on non-loopback addr %q without an auth token", deps.Addr)
+	if deps.Token == "" {
+		return nil, fmt.Errorf("web: refusing to start on %q without an auth token", deps.Addr)
 	}
 	if deps.MutationTimeout == 0 {
 		deps.MutationTimeout = 3 * time.Second
@@ -143,13 +143,22 @@ func NewServer(deps Deps) (*Server, error) {
 		token: deps.Token,
 	}
 	s.http = &http.Server{
-		Addr:              deps.Addr,
-		Handler:           s.buildHandler(),
+		Addr:    deps.Addr,
+		Handler: s.buildHandler(),
+		// Slowloris defenses on the REST endpoints:
+		//   ReadHeaderTimeout — header phase only
+		//   ReadTimeout       — full request (body included)
+		//   WriteTimeout      — handler must finish writing in this window
+		//   IdleTimeout       — between requests on a keep-alive connection
+		// The SSE handler (/api/events) clears its own write deadline via
+		// http.NewResponseController so long-lived streams aren't killed
+		// by the 30s WriteTimeout. Without that override, an authenticated
+		// peer on 0.0.0.0:8765 could trickle-feed bytes and hold every
+		// REST goroutine open indefinitely.
 		ReadHeaderTimeout: 10 * time.Second,
-		// SSE handlers need unbounded write deadlines; the per-request
-		// handler manages its own keepalive cadence.
-		WriteTimeout: 0,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	return s, nil
 }
@@ -225,7 +234,11 @@ func (s *Server) Publish(evt SessionEvent) {
 
 // buildHandler wires up the router. Static assets are unauthenticated so the
 // SPA shell loads in a browser without manual headers; all /api/* paths are
-// behind bearerAuth.
+// behind bearerAuth. POST endpoints additionally get a per-IP rate limiter
+// (10 req/sec burst 10) to keep a misbehaving client from stalling every
+// web handler in flight via the blocking tea.Program.Send channel. GET /
+// SSE are not rate-limited — they're cheap reads and viewers may
+// legitimately poll.
 func (s *Server) buildHandler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -236,17 +249,22 @@ func (s *Server) buildHandler() http.Handler {
 		mutationTimeout: s.deps.MutationTimeout,
 	}
 
+	rl := newRateLimiter(10, 10)
+
 	authed := func(h http.HandlerFunc) http.Handler {
 		return bearerAuth(s.token, http.HandlerFunc(h))
 	}
+	authedLimited := func(h http.HandlerFunc) http.Handler {
+		return rateLimit(rl, bearerAuth(s.token, http.HandlerFunc(h)))
+	}
 
 	mux.Handle("GET /api/sessions", authed(api.listSessions))
-	mux.Handle("POST /api/sessions", authed(api.createSession))
+	mux.Handle("POST /api/sessions", authedLimited(api.createSession))
 	mux.Handle("GET /api/sessions/{id}/pane", authed(api.getPane))
-	mux.Handle("POST /api/sessions/{id}/sendkeys", authed(api.sendKeys))
-	mux.Handle("POST /api/sessions/{id}/approve", authed(api.approve))
-	mux.Handle("POST /api/sessions/{id}/restart", authed(api.restart))
-	mux.Handle("POST /api/sessions/{id}/delete", authed(api.deleteSession))
+	mux.Handle("POST /api/sessions/{id}/sendkeys", authedLimited(api.sendKeys))
+	mux.Handle("POST /api/sessions/{id}/approve", authedLimited(api.approve))
+	mux.Handle("POST /api/sessions/{id}/restart", authedLimited(api.restart))
+	mux.Handle("POST /api/sessions/{id}/delete", authedLimited(api.deleteSession))
 	// SSE: EventSource can't set headers so we accept ?token=… via the same
 	// bearerAuth helper (it falls back to the query param).
 	mux.Handle("GET /api/events", authed(api.events))

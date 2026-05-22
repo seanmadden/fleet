@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/brizzai/fleet/internal/config"
 	"github.com/brizzai/fleet/internal/debuglog"
 	"github.com/brizzai/fleet/internal/migration"
+	"github.com/brizzai/fleet/internal/pathx"
 	"github.com/brizzai/fleet/internal/perfwatch"
 	"github.com/brizzai/fleet/internal/session"
 	"github.com/brizzai/fleet/internal/tmux"
@@ -144,8 +144,9 @@ func runTUIInner() int {
 //
 // Token bootstrapping: when web.token is empty AND web is enabled, generate
 // a 32-byte hex token, persist it back to ~/.config/fleet/config.json, and
-// log once at INFO. Non-loopback addr + empty token is a config error and
-// the server is refused at startup.
+// log its length (never the value) once at INFO. The bearer token is the
+// only auth — web.NewServer refuses to start with an empty token, even on
+// loopback, so the auto-mint here is required for every fresh install.
 func startWebServer(cfg *config.Config, model *ui.Home) *web.Server {
 	if cfg.Web == nil || !cfg.Web.IsEnabled() {
 		return nil
@@ -168,7 +169,12 @@ func startWebServer(cfg *config.Config, model *ui.Home) *web.Server {
 			debuglog.Logger.Error("web: failed to persist generated token", "err", err)
 			// Continue — user can copy from the log line below.
 		}
-		debuglog.Logger.Info("web: generated bearer token (saved to config)", "token", token)
+		// Never log the token itself — debug.log is included in bug reports
+		// (the `!` diagnostics dialog) and surfaced to anyone who reads
+		// ~/.config/fleet/debug.log. Length is enough to confirm generation
+		// worked. The full token goes to stderr ONCE during the bootstrapping
+		// startup so the user can paste it into mobile Safari.
+		debuglog.Logger.Info("web: generated bearer token (saved to config)", "token_len", len(token))
 		fmt.Fprintf(os.Stderr, "fleet web UI: generated bearer token (saved to ~/.config/fleet/config.json):\n  %s\n", token)
 	}
 
@@ -202,7 +208,7 @@ func runAdd(path string) {
 	}
 
 	// Expand and validate path.
-	path = expandPath(path)
+	path = pathx.Expand(path)
 	info, err := os.Stat(path)
 	if err != nil || !info.IsDir() {
 		fmt.Fprintf(os.Stderr, "Invalid directory: %s\n", path)
@@ -320,16 +326,4 @@ Usage:
   fleet hooks <install|uninstall|status>  Manage Claude Code hooks
   fleet version      Show version
   fleet help         Show this help`)
-}
-
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, path[2:])
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return path
-	}
-	return abs
 }

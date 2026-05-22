@@ -5,6 +5,7 @@ import (
 
 	"github.com/brizzai/fleet/internal/debuglog"
 	"github.com/brizzai/fleet/internal/session"
+	"github.com/brizzai/fleet/internal/tmux"
 	"github.com/brizzai/fleet/internal/web"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -17,10 +18,14 @@ import (
 // the pattern in renderBody), and mutations are wrapped in webMutationMsg
 // and shipped through tea.Program.Send so they run on the Update loop.
 //
-// Two minor characterisations to keep straight:
-//   - session.GetTmuxSession does not take an internal lock — it returns the
-//     stored pointer. We only call it under workerMu so the pointer doesn't
-//     race the worker.
+// Locking discipline (relevant to anyone touching this file):
+//   - session.GetTmuxSession() takes s.mu.RLock internally, so callers
+//     must not be holding s.mu when they call it. The web helpers below
+//     fetch ts := s.GetTmuxSession() BEFORE releasing workerMu so the
+//     read is serialised with the worker's view of the session.
+//   - sessionToSnapshot goes through Session.SnapshotForWeb() which
+//     reads per-session fields under s.mu.RLock(). Don't add raw struct
+//     reads here — they'll race the hook-update path.
 //   - tea.Program.Send is BLOCKING on an unbuffered channel. Handlers
 //     mitigate via a 3s reply-channel timeout (see internal/web/handlers.go).
 
@@ -80,21 +85,24 @@ func (h *Home) SessionsSnapshot() []web.SessionSnapshot {
 	return out
 }
 
-// PaneSnapshot implements web.SessionSource. Looks up the session under the
-// lock, copies the pointer, releases the lock, then calls CapturePane()
-// outside the lock — capture-pane shells out to tmux and can take tens of
-// milliseconds. The session pointer's tmuxSession field is only mutated by
-// Session.Restart under s.mu, so reading it after dropping workerMu is
-// safe: at worst we capture from a just-killed pane and CapturePane
-// returns an error.
+// PaneSnapshot implements web.SessionSource. Looks up the session +
+// captures the tmux pointer under workerMu so the read is serialised
+// with the worker goroutine and with Session.Restart (which swaps
+// s.tmuxSession under s.mu.Lock). Then releases workerMu before calling
+// CapturePane — capture-pane shells out to tmux and can take tens of
+// milliseconds, which we don't want to hold either lock for. At worst
+// we capture from a just-killed pane and CapturePane returns an error.
 func (h *Home) PaneSnapshot(id string) (string, error) {
 	h.workerMu.Lock()
 	s, ok := h.sessionByID[id]
+	var ts *tmux.Session
+	if ok {
+		ts = s.GetTmuxSession()
+	}
 	h.workerMu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("session not found: %s", id)
 	}
-	ts := s.GetTmuxSession()
 	if ts == nil {
 		return "", fmt.Errorf("session %s has no tmux handle", id)
 	}
@@ -106,21 +114,24 @@ func (h *Home) PaneSnapshot(id string) (string, error) {
 }
 
 // sessionToSnapshot copies the public fields of a session.Session into a
-// web.SessionSnapshot. Callers must hold the lock that guards the session
-// list pointer — but the per-session getters take s.mu themselves.
+// web.SessionSnapshot, going through Session.SnapshotForWeb() so per-
+// session field reads happen under s.mu (LastAccessedAt, PromptCount,
+// FirstPrompt, ClaudeSessionID are mutated by the worker / hook path
+// under s.mu.Lock and were previously read raw here).
 func sessionToSnapshot(s *session.Session) web.SessionSnapshot {
+	snap := s.SnapshotForWeb()
 	return web.SessionSnapshot{
-		ID:              s.ID,
-		Title:           s.Title,
-		ProjectPath:     s.ProjectPath,
-		Status:          string(s.GetStatus()),
-		WorkspaceName:   s.WorkspaceName,
-		CreatedAt:       s.CreatedAt,
-		LastAccessedAt:  s.LastAccessedAt,
-		ClaudeSessionID: s.ClaudeSessionID,
-		FirstPrompt:     s.FirstPrompt,
-		PromptCount:     s.PromptCount,
-		IsAlive:         s.IsAlive(),
+		ID:              snap.ID,
+		Title:           snap.Title,
+		ProjectPath:     snap.ProjectPath,
+		Status:          string(snap.Status),
+		WorkspaceName:   snap.WorkspaceName,
+		CreatedAt:       snap.CreatedAt,
+		LastAccessedAt:  snap.LastAccessedAt,
+		ClaudeSessionID: snap.ClaudeSessionID,
+		FirstPrompt:     snap.FirstPrompt,
+		PromptCount:     snap.PromptCount,
+		IsAlive:         snap.IsAlive,
 	}
 }
 
@@ -218,9 +229,19 @@ func (h *Home) handleWebMutation(msg webMutationMsg) (tea.Model, tea.Cmd) {
 // approveSessionByID sends "y"+Enter to the session if it's alive and in
 // waiting status. Extracted from quickApproveSelected so the web handler
 // can target sessions by ID rather than cursor position.
+//
+// Tmux pointer fetched under workerMu so the read is serialised with
+// the worker goroutine's view of the session — Restart() swaps
+// s.tmuxSession under s.mu.Lock(), and GetTmuxSession takes s.mu.RLock
+// internally; capturing ts here gives a stable pointer for the duration
+// of the SendKeys closure.
 func (h *Home) approveSessionByID(id string) (tea.Cmd, error) {
 	h.workerMu.Lock()
 	s, ok := h.sessionByID[id]
+	var ts *tmux.Session
+	if ok {
+		ts = s.GetTmuxSession()
+	}
 	h.workerMu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", id)
@@ -231,8 +252,10 @@ func (h *Home) approveSessionByID(id string) (tea.Cmd, error) {
 	if s.GetStatus() != session.StatusWaiting {
 		return nil, fmt.Errorf("session not waiting for approval")
 	}
+	if ts == nil {
+		return nil, fmt.Errorf("session has no tmux handle")
+	}
 	h.markSessionAccessed(s)
-	ts := s.GetTmuxSession()
 	debuglog.Logger.Info("web: approve", "id", id, "title", s.Title)
 	return func() tea.Msg {
 		_ = ts.SendKeys("y")
@@ -265,9 +288,17 @@ func (h *Home) restartSessionByID(id string) (tea.Cmd, error) {
 }
 
 // sendKeysToSessionByID sends raw keys to the session's tmux pane.
+//
+// Same locking discipline as approveSessionByID — ts is captured before
+// workerMu.Unlock() so the tmux pointer doesn't race a concurrent
+// Session.Restart() that swaps s.tmuxSession.
 func (h *Home) sendKeysToSessionByID(id, keys string) (tea.Cmd, error) {
 	h.workerMu.Lock()
 	s, ok := h.sessionByID[id]
+	var ts *tmux.Session
+	if ok {
+		ts = s.GetTmuxSession()
+	}
 	h.workerMu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", id)
@@ -275,11 +306,14 @@ func (h *Home) sendKeysToSessionByID(id, keys string) (tea.Cmd, error) {
 	if !s.IsAlive() {
 		return nil, fmt.Errorf("session not alive")
 	}
-	ts := s.GetTmuxSession()
 	if ts == nil {
 		return nil, fmt.Errorf("session has no tmux handle")
 	}
-	debuglog.Logger.Info("web: sendkeys", "id", id, "keys", keys)
+	// Never log keys — they can be prompts, passwords, paste-buffer
+	// contents, etc. Length-only keeps the log useful for debugging
+	// dispatch without leaking the payload into ~/.config/fleet/debug.log
+	// (which is included in bug reports via the `!` diagnostics dialog).
+	debuglog.Logger.Info("web: sendkeys", "id", id, "keys_len", len(keys))
 	return func() tea.Msg {
 		if err := ts.SendKeys(keys); err != nil {
 			return webSendKeysResultMsg{id: id, err: err}

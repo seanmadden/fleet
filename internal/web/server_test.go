@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -161,18 +162,19 @@ func TestNewServer_NonLoopbackWithoutTokenRefused(t *testing.T) {
 	}
 }
 
-func TestNewServer_LoopbackWithoutTokenAllowed(t *testing.T) {
-	s, err := NewServer(Deps{
+func TestNewServer_LoopbackWithoutTokenRefused(t *testing.T) {
+	// The earlier loopback exemption was dead code (bearerAuth always
+	// rejected empty-token requests anyway) and surprising — anyone with
+	// loopback access on a shared machine could otherwise read other
+	// users' sessions. NewServer now requires a token unconditionally.
+	_, err := NewServer(Deps{
 		Source:     newFakeSource(),
 		Dispatcher: &fakeDispatcher{},
 		Addr:       "127.0.0.1:0",
 		Token:      "",
 	})
-	if err != nil {
-		t.Fatalf("expected nil error for loopback addr with empty token; got %v", err)
-	}
-	if s.Token() != "" {
-		t.Errorf("Token() = %q, want empty", s.Token())
+	if err == nil {
+		t.Fatal("expected error for empty token on loopback addr")
 	}
 }
 
@@ -293,7 +295,7 @@ func TestSendKeys_DispatchesMutation(t *testing.T) {
 	_, ts := newTestServer(t, newFakeSource(), disp)
 	res := req(t, "POST", ts.URL+"/api/sessions/abc/sendkeys", testToken, map[string]string{"keys": "Enter"})
 	defer res.Body.Close()
-	if res.StatusCode != http.StatusNoContent {
+	if res.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(res.Body)
 		t.Fatalf("status = %d, body = %s", res.StatusCode, body)
 	}
@@ -320,7 +322,7 @@ func TestApprove_DispatchesMutation(t *testing.T) {
 	_, ts := newTestServer(t, newFakeSource(), disp)
 	res := req(t, "POST", ts.URL+"/api/sessions/abc/approve", testToken, nil)
 	defer res.Body.Close()
-	if res.StatusCode != http.StatusNoContent {
+	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d", res.StatusCode)
 	}
 	calls := disp.callsCopy()
@@ -334,7 +336,7 @@ func TestRestart_DispatchesMutation(t *testing.T) {
 	_, ts := newTestServer(t, newFakeSource(), disp)
 	res := req(t, "POST", ts.URL+"/api/sessions/abc/restart", testToken, nil)
 	defer res.Body.Close()
-	if res.StatusCode != http.StatusNoContent {
+	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d", res.StatusCode)
 	}
 	calls := disp.callsCopy()
@@ -348,7 +350,7 @@ func TestDelete_DispatchesMutationWithFlags(t *testing.T) {
 	_, ts := newTestServer(t, newFakeSource(), disp)
 	res := req(t, "POST", ts.URL+"/api/sessions/abc/delete", testToken, map[string]bool{"destroyWorkspace": true, "unpinRepo": false})
 	defer res.Body.Close()
-	if res.StatusCode != http.StatusNoContent {
+	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d", res.StatusCode)
 	}
 	calls := disp.callsCopy()
@@ -363,11 +365,14 @@ func TestDelete_DispatchesMutationWithFlags(t *testing.T) {
 func TestCreateSession_DispatchesMutation(t *testing.T) {
 	disp := &fakeDispatcher{}
 	_, ts := newTestServer(t, newFakeSource(), disp)
+	// Use t.TempDir() — the handler now expands+stats the path and
+	// rejects anything that isn't an existing directory.
+	dir := t.TempDir()
 	res := req(t, "POST", ts.URL+"/api/sessions", testToken, map[string]string{
-		"title": "hi", "path": "/tmp/repo", "workspaceName": "feature/x",
+		"title": "hi", "path": dir, "workspaceName": "feature/x",
 	})
 	defer res.Body.Close()
-	if res.StatusCode != http.StatusNoContent {
+	if res.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(res.Body)
 		t.Fatalf("status = %d, body = %s", res.StatusCode, body)
 	}
@@ -375,8 +380,8 @@ func TestCreateSession_DispatchesMutation(t *testing.T) {
 	if len(calls) != 1 || calls[0].Kind != MutationCreate {
 		t.Fatalf("unexpected calls: %+v", calls)
 	}
-	if p, _ := calls[0].Payload["path"].(string); p != "/tmp/repo" {
-		t.Errorf("payload path = %q", p)
+	if p, _ := calls[0].Payload["path"].(string); p != dir {
+		t.Errorf("payload path = %q, want %q", p, dir)
 	}
 }
 
@@ -386,6 +391,84 @@ func TestCreateSession_RequiresPath(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestCreateSession_RejectsNonExistentPath(t *testing.T) {
+	disp := &fakeDispatcher{}
+	_, ts := newTestServer(t, newFakeSource(), disp)
+	res := req(t, "POST", ts.URL+"/api/sessions", testToken, map[string]string{
+		"path": "/this/path/definitely/does/not/exist/anywhere",
+	})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+	// Must NOT have reached the dispatcher — the validation happens
+	// before any mutation is sent into the TUI event loop.
+	if got := len(disp.callsCopy()); got != 0 {
+		t.Errorf("dispatcher called %d times; want 0 (path was rejected)", got)
+	}
+}
+
+func TestCreateSession_RejectsNonDirectory(t *testing.T) {
+	disp := &fakeDispatcher{}
+	_, ts := newTestServer(t, newFakeSource(), disp)
+	// Create a file (not a directory) and point the handler at it.
+	dir := t.TempDir()
+	f := dir + "/not-a-dir"
+	if err := os.WriteFile(f, []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write tmp file: %v", err)
+	}
+	res := req(t, "POST", ts.URL+"/api/sessions", testToken, map[string]string{"path": f})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+	if got := len(disp.callsCopy()); got != 0 {
+		t.Errorf("dispatcher called %d times; want 0 (file rejected)", got)
+	}
+}
+
+func TestCreateSession_DefaultsTitleViaTitleFromPath(t *testing.T) {
+	// When title is omitted the handler should derive it from the
+	// resolved path (filepath.Base) rather than echoing the raw input.
+	disp := &fakeDispatcher{}
+	_, ts := newTestServer(t, newFakeSource(), disp)
+	dir := t.TempDir()
+	res := req(t, "POST", ts.URL+"/api/sessions", testToken, map[string]string{"path": dir})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", res.StatusCode)
+	}
+	calls := disp.callsCopy()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	title, _ := calls[0].Payload["title"].(string)
+	if title == dir || title == "" {
+		t.Errorf("title = %q; expected base name of %q", title, dir)
+	}
+}
+
+func TestCreateSession_RejectsOversizedBody(t *testing.T) {
+	// MaxBytesReader should reject any body larger than maxJSONBody.
+	_, ts := newTestServer(t, newFakeSource(), &fakeDispatcher{})
+	big := strings.Repeat("a", maxJSONBody+1)
+	body := `{"path":"/tmp","title":"` + big + `"}`
+	r, err := http.NewRequest("POST", ts.URL+"/api/sessions", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	r.Header.Set("Authorization", "Bearer "+testToken)
+	r.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(r)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (oversized body)", res.StatusCode)
 	}
 }
 
@@ -418,7 +501,9 @@ type silentDispatcher struct{}
 func (silentDispatcher) Dispatch(_ Mutation) {} // never replies
 
 // TestMutationErrorPropagates — a dispatcher that returns an error should
-// produce a 500 with the error message in the body.
+// produce a 500 with a generic body. The raw error stays server-side
+// (in debug.log) so a bearer-token holder can't fish internal state out
+// of error messages.
 func TestMutationErrorPropagates(t *testing.T) {
 	disp := &fakeDispatcher{autoReply: fmt.Errorf("session not waiting for approval")}
 	_, ts := newTestServer(t, newFakeSource(), disp)
@@ -428,8 +513,13 @@ func TestMutationErrorPropagates(t *testing.T) {
 		t.Fatalf("status = %d, want 500", res.StatusCode)
 	}
 	body, _ := io.ReadAll(res.Body)
-	if !strings.Contains(string(body), "not waiting") {
-		t.Errorf("body = %q, want substring 'not waiting'", body)
+	// Body should NOT echo the dispatcher's error verbatim — the raw
+	// error stays in debug.log only.
+	if strings.Contains(string(body), "not waiting") {
+		t.Errorf("body leaked internal error: %q", body)
+	}
+	if !strings.Contains(string(body), "mutation failed") {
+		t.Errorf("body = %q, want substring 'mutation failed'", body)
 	}
 }
 
@@ -495,28 +585,6 @@ func TestSSE_DropsOnSlowSubscriber(t *testing.T) {
 	// Second take resets the flag.
 	if sub.takePendingRefresh() {
 		t.Fatal("expected pendingRefresh to be cleared after first take")
-	}
-}
-
-// --- Loopback detection ---
-
-func TestIsLoopbackAddr(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"127.0.0.1:8765", true},
-		{"localhost:8765", true},
-		{"[::1]:8765", true},
-		{"0.0.0.0:8765", false},
-		{"192.168.1.5:8765", false},
-		{"example.com:8765", false},
-	}
-	for _, c := range cases {
-		got := isLoopbackAddr(c.in)
-		if got != c.want {
-			t.Errorf("isLoopbackAddr(%q) = %v, want %v", c.in, got, c.want)
-		}
 	}
 }
 

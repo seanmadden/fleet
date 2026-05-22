@@ -218,8 +218,67 @@ func (s *Session) IsAlive() bool {
 }
 
 // GetTmuxSession returns the underlying tmux session handle.
+//
+// Takes the read lock so callers see a coherent pointer even when
+// Restart() concurrently swaps the field. Callers MUST NOT hold s.mu (in
+// either mode) when calling this — doing so would deadlock. Methods
+// inside the session package access s.tmuxSession directly under s.mu
+// instead.
 func (s *Session) GetTmuxSession() *tmux.Session {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.tmuxSession
+}
+
+// WebSnapshot is a thread-safe read-only view of the public session
+// fields the embedded web server exposes via GET /api/sessions. The
+// fields here mirror web.SessionSnapshot 1:1 to keep mapping trivial
+// without pulling the internal/web package into session.
+//
+// All values are captured under s.mu.RLock(), so reading them after
+// the call is safe even if a worker goroutine is mutating fields like
+// LastAccessedAt, PromptCount, FirstPrompt, ClaudeSessionID concurrently.
+type WebSnapshot struct {
+	ID              string
+	Title           string
+	ProjectPath     string
+	Status          Status
+	WorkspaceName   string
+	CreatedAt       time.Time
+	LastAccessedAt  time.Time
+	ClaudeSessionID string
+	FirstPrompt     string
+	PromptCount     int
+	IsAlive         bool
+}
+
+// SnapshotForWeb returns a coherent point-in-time copy of the public
+// fields the web server cares about. The read is protected by s.mu so
+// per-session fields don't race the worker goroutine (see MarkAccessed,
+// UpdateHookStatus).
+//
+// IsAlive is called outside the lock — it shells out to tmux (or the
+// test-injected pane capturer) and doesn't touch session state under
+// s.mu. Pulling it inside would also be wrong: IsAlive could block on
+// tmux for tens of milliseconds, and we shouldn't hold s.mu (even RLock)
+// during that.
+func (s *Session) SnapshotForWeb() WebSnapshot {
+	s.mu.RLock()
+	snap := WebSnapshot{
+		ID:              s.ID,
+		Title:           s.Title,
+		ProjectPath:     s.ProjectPath,
+		Status:          s.Status,
+		WorkspaceName:   s.WorkspaceName,
+		CreatedAt:       s.CreatedAt,
+		LastAccessedAt:  s.LastAccessedAt,
+		ClaudeSessionID: s.ClaudeSessionID,
+		FirstPrompt:     s.FirstPrompt,
+		PromptCount:     s.PromptCount,
+	}
+	s.mu.RUnlock()
+	snap.IsAlive = s.IsAlive()
+	return snap
 }
 
 // MarkAccessed updates the last accessed timestamp.

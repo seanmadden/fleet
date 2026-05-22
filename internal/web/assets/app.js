@@ -92,7 +92,13 @@
   // --- Rendering ---
   function renderList() {
     if (!sessions.length) {
-      listEl.innerHTML = '<li class="empty">No sessions. Tap + to create one.</li>';
+      // Build via DOM API rather than innerHTML — the string is static
+      // today but innerHTML is a code-review trap in a file that
+      // otherwise uses textContent / replaceChildren throughout.
+      const empty = document.createElement('li');
+      empty.className = 'empty';
+      empty.textContent = 'No sessions. Tap + to create one.';
+      listEl.replaceChildren(empty);
       return;
     }
     const frag = document.createDocumentFragment();
@@ -190,15 +196,23 @@
   }
 
   // --- SSE ---
+  // sseErrorNotified is reset every time the SSE connection successfully
+  // emits an event, so each fresh disconnect surfaces exactly one toast
+  // rather than spamming a new one for every onerror tick the browser
+  // fires while it auto-reconnects.
+  let sseErrorNotified = false;
   function connectSSE() {
     if (sse) sse.close();
     const token = getToken();
     if (!token) return;
+    sseErrorNotified = false;
     sse = new EventSource('/api/events?token=' + encodeURIComponent(token));
-    sse.addEventListener('refresh', refreshSessions);
-    sse.addEventListener('created', refreshSessions);
-    sse.addEventListener('deleted', refreshSessions);
+    const onAnyEvent = () => { sseErrorNotified = false; };
+    sse.addEventListener('refresh', () => { onAnyEvent(); refreshSessions(); });
+    sse.addEventListener('created', () => { onAnyEvent(); refreshSessions(); });
+    sse.addEventListener('deleted', () => { onAnyEvent(); refreshSessions(); });
     sse.addEventListener('updated', (e) => {
+      onAnyEvent();
       try {
         const data = JSON.parse(e.data);
         if (data && data.snapshot) {
@@ -216,8 +230,13 @@
       }
     });
     sse.onerror = () => {
-      // EventSource auto-reconnects; surface the gap so the user knows.
-      // Don't spam — only first error per disconnect.
+      // EventSource auto-reconnects; surface the gap so the user knows
+      // live updates have paused. Only one toast per disconnect — the
+      // browser fires onerror repeatedly during reconnect attempts.
+      if (!sseErrorNotified) {
+        sseErrorNotified = true;
+        toast('Live updates disconnected — reconnecting…', { error: true });
+      }
     };
   }
 

@@ -12,6 +12,14 @@ const (
 	// (via the drop signaller) so the client can refetch from scratch instead
 	// of getting a torn view.
 	subscriberBuffer = 32
+
+	// maxSubscribers caps the number of concurrent SSE clients. Each
+	// subscriber pins a goroutine + buffered channel + open TCP socket;
+	// without a cap an authenticated client could open thousands of
+	// parallel `/api/events` streams and exhaust the process's FD/goroutine
+	// budget. 50 is plenty for a personal-tool deployment (one phone, one
+	// laptop, headroom for stale reconnects).
+	maxSubscribers = 50
 )
 
 // eventHub fans SessionEvent values out to all live SSE subscribers.
@@ -39,18 +47,34 @@ func newEventHub() *eventHub {
 // subscribe registers a new subscriber and returns its channel. The caller
 // must call unsubscribe when the SSE request ends, otherwise the hub leaks
 // memory for dead clients.
+//
+// Returns nil if the hub already has maxSubscribers active subscribers;
+// the SSE handler turns that into a 503 so a runaway client can't
+// exhaust process resources by opening unlimited concurrent streams.
 func (h *eventHub) subscribe() *subscriber {
 	s := &subscriber{ch: make(chan SessionEvent, subscriberBuffer)}
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.subscribers) >= maxSubscribers {
+		return nil
+	}
 	h.subscribers[s] = struct{}{}
-	h.mu.Unlock()
 	return s
 }
 
 func (h *eventHub) unsubscribe(s *subscriber) {
+	if s == nil {
+		return
+	}
 	h.mu.Lock()
+	_, present := h.subscribers[s]
 	delete(h.subscribers, s)
 	h.mu.Unlock()
+	if !present {
+		// Already removed (or never inserted) — closing the channel a
+		// second time would panic.
+		return
+	}
 	// Close the channel so the SSE handler's range loop exits cleanly.
 	close(s.ch)
 }
